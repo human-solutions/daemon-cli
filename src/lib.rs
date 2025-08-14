@@ -1,14 +1,21 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+use serde::{Deserialize, Serialize};
+
+pub trait RpcMethod: Serialize + for<'de> Deserialize<'de> + Send + Sync {
+    type Response: Serialize + for<'de> Deserialize<'de> + Send + Sync;
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "M: RpcMethod")]
+pub struct RpcRequest<M: RpcMethod> {
+    pub id: String,
+    pub method: M,
+    pub client_version: u64,
+}
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+#[derive(Serialize, Deserialize)]
+#[serde(bound(deserialize = "R: serde::de::DeserializeOwned"))]
+pub enum RpcResponse<R> {
+    Success { output: R },
+    Error { error: String },
+    VersionMismatch { daemon_version: u64, message: String },
 }
