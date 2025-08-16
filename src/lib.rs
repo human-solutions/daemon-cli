@@ -1,16 +1,16 @@
-use std::path::PathBuf;
+use anyhow::Result;
 use async_trait::async_trait;
-use serde::{Serialize, Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use anyhow::Result;
 
 pub mod prelude {
     pub use crate::*;
-    pub use async_trait::async_trait;
-    pub use serde::{Serialize, Deserialize};
-    pub use tokio_util::sync::CancellationToken;
     pub use anyhow::Result;
+    pub use async_trait::async_trait;
+    pub use serde::{Deserialize, Serialize};
+    pub use tokio_util::sync::CancellationToken;
 }
 
 // Core trait for RPC methods
@@ -38,10 +38,9 @@ pub enum RpcResponse<R> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonStatus {
     Ready,
-    Busy(String), // User message describing what the daemon is doing
+    Busy(String),  // User message describing what the daemon is doing
     Error(String), // Error message describing why the daemon cannot run
 }
-
 
 // Handler trait for daemon implementations
 #[async_trait]
@@ -70,7 +69,7 @@ impl<M: RpcMethod> DaemonClient<M> {
         build_timestamp: u64,
     ) -> Result<Self> {
         let (_status_tx, status_receiver) = mpsc::channel(32);
-        
+
         Ok(Self {
             status_receiver,
             daemon_id,

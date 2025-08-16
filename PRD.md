@@ -17,188 +17,57 @@
 
 ## Core Features
 
-### 1. Generic IPC Protocol
+### 1. Type-Safe RPC Protocol
+- Define custom RPC methods with compile-time type safety
+- Automatic request/response serialization
+- Built-in error handling and version mismatch detection
 
-```rust
-pub trait RpcMethod: Serialize + DeserializeOwned + Send + Sync {
-    type Response: Serialize + DeserializeOwned + Send + Sync;
-}
+### 2. Status Reporting & Cancellation
+- Real-time status updates: Ready/Busy(message)/Error(message)
+- Task cancellation support during long-running operations
+- Status streaming to client applications
 
-pub struct RpcRequest<M: RpcMethod> {
-    pub method: M,
-    pub client_build_timestamp: u64,
-}
-
-pub enum RpcResponse<R> {
-    Success { output: R },
-    Error { error: String },
-    VersionMismatch { daemon_build_timestamp: u64 },
-}
-```
-
-**Features:**
-- Type-safe method definitions with automatic serialization
-- Built-in error handling and version checking
-
-### 2. Simple Status Reporting
-
-```rust
-pub enum DaemonStatus {
-    Ready,
-    Busy(String), // User message describing what the daemon is doing
-    Error(String), // Error message describing why the daemon cannot run
-}
-```
-
-**Features:**
-- Ready/Busy/Error status messages with cancellation
-
-### 3. Daemon Client
-
-```rust
-pub struct DaemonClient<M: RpcMethod> {
-    status_receiver: mpsc::Receiver<DaemonStatus>,
-}
-
-impl<M: RpcMethod> DaemonClient<M> {
-    pub async fn connect(
-        daemon_id: u64,
-        daemon_executable: PathBuf,
-        build_timestamp: u64,
-    ) -> Result<Self>;
-    
-    pub async fn request(&mut self, method: M) -> Result<RpcResponse<M::Response>>;
-    pub async fn cancel(&mut self) -> Result<()>;
-}
-```
-
-**Features:**
-- Automatic daemon spawning if not running
-- Real-time status streaming with cancellation support
-- Build timestamp-based version checking
+### 3. Daemon Lifecycle Management
+- Automatic daemon spawning when needed
+- Process health monitoring and cleanup
+- Unix socket-based IPC (Linux/macOS)
+- Single daemon instance per ID with automatic restart on crashes
 
 ## API Design
 
-### Build Script Setup
+### Version Management
+Applications embed a build timestamp at compile time for version checking between client and daemon. When versions mismatch, the daemon is automatically restarted with the newer version.
 
-The consuming binary crate must generate a build timestamp in `build.rs`:
+### Usage Pattern
 
-```rust
-// build.rs in the consuming crate
-use std::time::{SystemTime, UNIX_EPOCH};
+**Client Side:**
+1. Define RPC methods with associated response types
+2. Connect to daemon (auto-spawns if needed)
+3. Send requests and receive typed responses
+4. Monitor real-time status updates
+5. Cancel long-running operations when needed
 
-fn main() {
-    // Embed build timestamp for version checking between client and daemon
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_secs();
-    println!("cargo:rustc-env=BUILD_TIMESTAMP={}", timestamp);
-}
-```
+**Daemon Side:**
+1. Implement RPC handler trait for your methods
+2. Handle requests with status updates and cancellation support
+3. Framework manages process lifecycle and IPC automatically
 
-In main.rs or lib.rs
+### Key Behaviors
 
-```rust
-// Build timestamp embedded at compile time for version checking
-use std::sync::LazyLock;
-static BUILD_TIMESTAMP: LazyLock<u64> = LazyLock::new(|| {
-    env!("BUILD_TIMESTAMP").parse::<u64>()
-        .expect("BUILD_TIMESTAMP must be a valid u64")
-});
+**Single-Task Processing:**
+- Daemon handles one request at a time
+- Additional requests are rejected with busy status
+- Ensures predictable resource usage
 
-// later it is used when creating the daemon
-```
+**Cancellation Support:**
+- Long-running tasks can be cancelled mid-execution
+- Daemon immediately stops work and returns to ready state
+- Clean resource cleanup on cancellation
 
-### Client Side
-
-```rust
-use daemon_rpc::prelude::*;
-
-#[derive(Serialize, Deserialize)]
-enum MyMethod {
-    ProcessFile { path: PathBuf },
-    GetStatus,
-}
-
-impl RpcMethod for MyMethod {
-    type Response = String;
-}
-
-// Usage
-let mut client = DaemonClient::connect(
-    12345, // daemon_id
-    "/path/to/my-daemon".into(), // daemon_executable
-    *BUILD_TIMESTAMP, // build_timestamp
-).await?;
-
-// Listen for status updates
-tokio::spawn(async move {
-    while let Some(status) = client.status_receiver.recv().await {
-        match status {
-            DaemonStatus::Ready => println!("Daemon is ready"),
-            DaemonStatus::Busy(msg) => println!("Daemon is busy: {}", msg),
-            DaemonStatus::Error(err) => println!("Daemon error: {}", err),
-        }
-    }
-});
-
-// Make request (daemon rejects if busy with another task)
-let response = client.request(MyMethod::ProcessFile {
-    path: "src/main.rs".into()
-}).await?;
-
-// Cancel if needed
-client.cancel().await?;
-```
-
-### Daemon Side
-
-```rust
-use daemon_rpc::prelude::*;
-
-struct MyDaemon;
-
-#[async_trait]
-impl RpcHandler<MyMethod> for MyDaemon {
-    async fn handle(&mut self, method: MyMethod, cancel_token: CancellationToken, status_tx: mpsc::Sender<DaemonStatus>) -> Result<String> {
-        match method {
-            MyMethod::ProcessFile { path } => {
-                // Send busy status
-                status_tx.send(DaemonStatus::Busy(format!("Processing file: {:?}", path))).await?;
-
-                // Simulate long-running work with cancellation support
-                for i in 0..100 {
-                    if cancel_token.is_cancelled() {
-                        return Err(anyhow::anyhow!("Task cancelled"));
-                    }
-
-                    // Do some work
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-
-                    // Update status occasionally
-                    if i % 20 == 0 {
-                        status_tx.send(DaemonStatus::Busy(format!("Processing file: {:?} ({}% complete)", path, i))).await?;
-                    }
-                }
-
-                // Send ready status when done
-                status_tx.send(DaemonStatus::Ready).await?;
-                Ok(format!("Processed file: {:?}", path))
-            },
-            MyMethod::GetStatus => {
-                // This is always immediate
-                Ok("Ready".to_string())
-            },
-        }
-    }
-}
-
-// Usage
-let daemon = DaemonServer::new(12345, MyDaemon);
-
-daemon.run().await?;
-```
+**Version Checking:**
+- Client and daemon compare build timestamps on every request
+- Version mismatch triggers automatic daemon restart
+- Ensures client and daemon are always in sync
 
 ## Technical Considerations
 
