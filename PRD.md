@@ -17,29 +17,7 @@
 
 ## Core Features
 
-### 1. Daemon Management
-
-```rust
-pub struct DaemonManager<T> {
-    daemon_id: u64,
-    daemon_factory: Box<dyn DaemonFactory<T>>,
-    /// Build timestamp provided by the consuming binary crate
-    build_timestamp: u64,
-}
-
-pub trait DaemonFactory<T> {
-    async fn create_daemon(&self, daemon_id: u64) -> Result<T>;
-    fn daemon_executable(&self) -> PathBuf;
-}
-```
-
-**Features:**
-- ID-based daemon identification for parallel daemon support
-- Automatic daemon spawning and lifecycle management
-- Configurable idle timeouts with clean shutdown
-- Build timestamp-based version checking (provided by consuming crate)
-
-### 2. Generic IPC Protocol
+### 1. Generic IPC Protocol
 
 ```rust
 pub trait RpcMethod: Serialize + DeserializeOwned + Send + Sync {
@@ -62,7 +40,7 @@ pub enum RpcResponse<R> {
 - Type-safe method definitions with automatic serialization
 - Built-in error handling and version checking
 
-### 3. Simple Status Reporting
+### 2. Simple Status Reporting
 
 ```rust
 pub enum DaemonStatus {
@@ -75,18 +53,29 @@ pub enum DaemonStatus {
 **Features:**
 - Ready/Busy/Error status messages with cancellation
 
-### 4. Status Communication
+### 3. Daemon Client
 
 ```rust
-pub struct StatusClient<M: RpcMethod> {
-    request_sender: mpsc::Sender<RpcRequest<M>>,
+pub struct DaemonClient<M: RpcMethod> {
     status_receiver: mpsc::Receiver<DaemonStatus>,
-    cancel_sender: mpsc::Sender<()>,
+}
+
+impl<M: RpcMethod> DaemonClient<M> {
+    pub async fn connect(
+        daemon_id: u64,
+        daemon_executable: PathBuf,
+        build_timestamp: u64,
+    ) -> Result<Self>;
+    
+    pub async fn request(&mut self, method: M) -> Result<RpcResponse<M::Response>>;
+    pub async fn cancel(&mut self) -> Result<()>;
 }
 ```
 
 **Features:**
+- Automatic daemon spawning if not running
 - Real-time status streaming with cancellation support
+- Build timestamp-based version checking
 
 ## API Design
 
@@ -137,14 +126,11 @@ impl RpcMethod for MyMethod {
 }
 
 // Usage
-let manager = DaemonManager::builder()
-    .daemon_id(12345)
-    .daemon_factory(MyDaemonFactory::new())
-    .build_timestamp(build_timestamp)
-    .idle_timeout(Duration::from_secs(3600))
-    .build();
-
-let mut client = manager.connect().await?;
+let mut client = DaemonClient::connect(
+    12345, // daemon_id
+    "/path/to/my-daemon".into(), // daemon_executable
+    *BUILD_TIMESTAMP, // build_timestamp
+).await?;
 
 // Listen for status updates
 tokio::spawn(async move {
