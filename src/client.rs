@@ -206,12 +206,11 @@ impl<M: RpcMethod> DaemonClient<M> {
             }
 
             // Try to connect
-            if socket_path.exists() {
-                if let Ok(socket_client) = SocketClient::connect(daemon_id).await {
+            if socket_path.exists()
+                && let Ok(socket_client) = SocketClient::connect(daemon_id).await {
                     // Successfully connected
                     return Ok((socket_client, Some(child)));
                 }
-            }
 
             if attempts >= MAX_ATTEMPTS {
                 let _ = child.kill().await;
