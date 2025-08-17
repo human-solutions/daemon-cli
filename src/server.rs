@@ -59,9 +59,52 @@ impl TaskManager {
     }
 }
 
-// Daemon server implementation
+/// Daemon server that processes RPC requests from clients.
+///
+/// Handles one request at a time with automatic status reporting,
+/// cancellation support, and version checking.
+///
+/// # Example
+///
+/// ```rust
+/// use daemon_rpc::prelude::*;
+///
+/// #[derive(Clone)]
+/// struct MyDaemon;
+///
+/// #[derive(Serialize, Deserialize, Debug, Clone)]
+/// enum MyMethod {
+///     Process,
+///     GetStatus,
+/// }
+///
+/// impl RpcMethod for MyMethod {
+///     type Response = String;
+/// }
+///
+/// #[async_trait]
+/// impl RpcHandler<MyMethod> for MyDaemon {
+///     async fn handle(
+///         &mut self,
+///         method: MyMethod,
+///         _cancel_token: CancellationToken,
+///         _status_tx: tokio::sync::mpsc::Sender<DaemonStatus>
+///     ) -> Result<String> {
+///         match method {
+///             MyMethod::Process => Ok("Processed".to_string()),
+///             MyMethod::GetStatus => Ok("Ready".to_string()),
+///         }
+///     }
+/// }
+///
+/// // Demonstrate server creation
+/// let daemon = MyDaemon;
+/// let server = DaemonServer::new(1000, 1234567890, daemon);
+/// ```
 pub struct DaemonServer<H, M: RpcMethod> {
+    /// Unique identifier for this daemon instance
     pub daemon_id: u64,
+    /// Build timestamp for version compatibility checking
     pub build_timestamp: u64,
     handler: H,
     _phantom: std::marker::PhantomData<M>,
@@ -72,6 +115,14 @@ where
     H: RpcHandler<M> + Clone + 'static,
     M: RpcMethod + 'static,
 {
+    /// Create a new daemon server instance.
+    ///
+    /// # Parameters
+    ///
+    /// * `daemon_id` - Unique identifier for this daemon instance
+    /// * `build_timestamp` - Build timestamp for version compatibility checking
+    /// * `handler` - Your RPC handler implementation
+    ///
     pub fn new(daemon_id: u64, build_timestamp: u64, handler: H) -> Self {
         Self {
             daemon_id,
@@ -81,7 +132,24 @@ where
         }
     }
 
-    /// Spawn server using Unix socket transport
+    /// Start the daemon server and listen for client connections.
+    ///
+    /// Creates a Unix socket and processes incoming RPC requests.
+    /// This method blocks until the daemon is shut down.
+    ///
+    /// # Returns
+    ///
+    /// Returns when the server shuts down, or an error if startup fails
+    ///
+    /// # Behavior
+    ///
+    /// - Creates Unix socket at `/tmp/daemon-rpc-{daemon_id}.sock`
+    /// - Sets socket permissions to 0600 (owner read/write only)
+    /// - Accepts multiple client connections
+    /// - Processes one request at a time (rejects concurrent requests)
+    /// - Broadcasts status updates to all connected clients
+    /// - Handles task cancellation with graceful + forceful termination
+    /// - Performs version checking on every request
     pub async fn spawn_with_socket(self) -> Result<()> {
         let mut socket_server = SocketServer::new(self.daemon_id).await?;
         let state = Arc::new(Mutex::new(ServerState::Ready));

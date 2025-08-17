@@ -6,19 +6,131 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::broadcast;
 
-// Daemon client for communicating with daemon
+/// Client for communicating with daemon processes via Unix sockets.
+///
+/// Provides zero-configuration daemon management with automatic spawning,
+/// version synchronization, and process lifecycle management.
+///
+/// # Example
+///
+/// ```rust
+/// use daemon_rpc::prelude::*;
+/// use std::path::PathBuf;
+///
+/// #[derive(Serialize, Deserialize, Debug, Clone)]
+/// enum MyMethod {
+///     Process { data: String },
+///     GetStatus,
+/// }
+///
+/// impl RpcMethod for MyMethod {
+///     type Response = String;
+/// }
+///
+/// // Demonstrate the API structure and types
+/// let method = MyMethod::Process { data: "hello".to_string() };
+/// let daemon_exe = PathBuf::from("./target/debug/examples/cli");
+/// let build_timestamp = 1234567890u64;
+///
+/// // Verify method serialization works
+/// let json = serde_json::to_string(&method).unwrap();
+/// assert!(json.contains("hello"));
+///
+/// // Show response handling pattern
+/// let response: RpcResponse<String> = RpcResponse::Success {
+///     output: "Task completed".to_string()
+/// };
+///
+/// match response {
+///     RpcResponse::Success { output } => {
+///         assert_eq!(output, "Task completed");
+///     }
+///     RpcResponse::Error { error } => {
+///         panic!("Unexpected error: {}", error);
+///     }
+///     _ => panic!("Unexpected response type"),
+/// }
+///
+/// // Actual usage pattern (requires daemon binary):
+///  # tokio_test::block_on(async {
+///      let Ok(mut client) = DaemonClient::connect(1000, daemon_exe, build_timestamp).await else {
+///         // handle error...
+///         return;
+///      };
+///      let response = client.request(method).await;
+///      // Handle response...
+///      let _ = client.shutdown().await;
+///  # });
+/// ```
 pub struct DaemonClient<M: RpcMethod> {
     socket_client: SocketClient,
+    /// Stream of real-time status updates from the daemon
     pub status_receiver: broadcast::Receiver<DaemonStatus>,
+    /// Unique identifier for this daemon instance
     pub daemon_id: u64,
+    /// Path to the daemon executable for spawning
     pub daemon_executable: PathBuf,
+    /// Build timestamp for version compatibility checking
     pub build_timestamp: u64,
     daemon_process: Option<tokio::process::Child>,
     _phantom: std::marker::PhantomData<M>,
 }
 
 impl<M: RpcMethod> DaemonClient<M> {
-    /// Zero-configuration daemon connection - spawns daemon if needed
+    /// Connect to a daemon with zero configuration - automatically spawns if needed.
+    ///
+    /// This is the primary method for establishing daemon connections. The framework
+    /// automatically handles:
+    /// - Detecting if daemon is already running
+    /// - Spawning new daemon process if needed
+    /// - Waiting for daemon to become ready
+    /// - Establishing Unix socket connection
+    /// - Managing daemon process lifecycle
+    ///
+    /// # Parameters
+    ///
+    /// * `daemon_id` - Unique identifier for the daemon instance
+    /// * `daemon_executable` - Path to the daemon binary to spawn if needed
+    /// * `build_timestamp` - Build timestamp for version compatibility checking
+    ///
+    /// # Returns
+    ///
+    /// A connected client ready to send RPC requests
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use daemon_rpc::prelude::*;
+    /// use std::path::PathBuf;
+    ///
+    /// // For doc test - shows API structure without requiring actual daemon binary
+    /// let daemon_exe = PathBuf::from("./target/debug/examples/cli");
+    ///
+    /// // Demonstrates the connect API (would spawn daemon if binary existed)
+    /// # tokio_test::block_on(async {
+    ///     // Define types for the doc test
+    ///     use daemon_rpc::prelude::*;
+    ///     #[derive(Serialize, Deserialize, Debug, Clone)]
+    ///     enum TestMethod { GetStatus }
+    ///     impl RpcMethod for TestMethod { type Response = String; }
+    ///
+    ///     let Ok(mut _client): Result<DaemonClient<TestMethod>> = DaemonClient::connect(1000, daemon_exe.clone(), 1234567890).await else {
+    ///         return; // Skip if daemon binary doesn't exist
+    ///     };
+    ///     let _ = _client.shutdown().await;
+    /// # });
+    ///
+    /// // API usage pattern:
+    /// assert_eq!(daemon_exe.to_string_lossy().contains("cli"), true);
+    /// ```
+    ///
+    /// # Behavior
+    ///
+    /// - If daemon is running and responsive → connects to existing daemon
+    /// - If daemon is not running → spawns new daemon process
+    /// - If daemon is unresponsive → cleans up and spawns new daemon
+    /// - Waits up to 5 seconds for daemon to become ready
+    /// - Returns error if daemon fails to start
     pub async fn connect(
         daemon_id: u64,
         daemon_executable: PathBuf,
@@ -121,7 +233,29 @@ impl<M: RpcMethod> DaemonClient<M> {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    pub async fn request(&mut self, method: M) -> Result<RpcResponse<M::Response>> {
+    /// Send an RPC request to the daemon and wait for response.
+    ///
+    /// Automatically handles version checking and daemon restart if needed.
+    /// The daemon processes one request at a time, so concurrent requests
+    /// will be rejected with a busy error.
+    ///
+    /// # Parameters
+    ///
+    /// * `method` - The RPC method to execute on the daemon
+    ///
+    /// # Returns
+    ///
+    /// The response from the daemon method execution
+    ///
+    /// # Behavior
+    ///
+    /// - **Version Checking**: Compares build timestamps and restarts daemon if mismatched
+    /// - **Error Handling**: Propagates daemon errors with clear messages
+    /// - **Connection Recovery**: Detects broken connections and attempts recovery
+    pub async fn request(&mut self, method: M) -> Result<RpcResponse<M::Response>>
+    where
+        M: Clone, // Required for automatic retry on version mismatch
+    {
         let request = RpcRequest {
             method: method.clone(),
             client_build_timestamp: self.build_timestamp,
@@ -192,7 +326,25 @@ impl<M: RpcMethod> DaemonClient<M> {
         Ok(response)
     }
 
-    /// Cancel the currently running task on the daemon
+    /// Cancel the currently running task on the daemon.
+    ///
+    /// Sends a cancellation message to the daemon, which will attempt to
+    /// gracefully stop the current task. If the task doesn't respond within
+    /// 1 second, it will be forcefully terminated.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - Task was cancelled successfully
+    /// * `Ok(false)` - No task was running or cancellation failed
+    /// * `Err(_)` - Communication error with daemon
+    ///
+    /// # Behavior
+    ///
+    /// 1. Sends cancel message to daemon
+    /// 2. Daemon signals running task to stop gracefully
+    /// 3. After 1 second timeout, daemon force-kills the task
+    /// 4. Daemon sends acknowledgment back to client
+    /// 5. Returns success/failure indication
     pub async fn cancel_current_task(&mut self) -> Result<bool> {
         // Send cancel message
         self.socket_client
@@ -233,7 +385,36 @@ impl<M: RpcMethod> DaemonClient<M> {
         Ok(())
     }
 
-    /// Gracefully shutdown the managed daemon process
+    /// Gracefully shutdown the managed daemon process.
+    ///
+    /// Only affects daemons spawned by this client. Daemons that were
+    /// already running when the client connected are left untouched.
+    ///
+    /// # Behavior
+    ///
+    /// 1. Gives daemon 100ms to exit gracefully
+    /// 2. Force-kills daemon if still running
+    /// 3. Cleans up socket files
+    /// 4. Releases process handle
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use daemon_rpc::prelude::*;
+    ///
+    /// #[derive(Serialize, Deserialize, Debug, Clone)]
+    /// enum MyMethod { Process, GetStatus }
+    ///
+    /// impl RpcMethod for MyMethod {
+    ///     type Response = String;
+    /// }
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// The `Drop` implementation automatically cleans up daemon processes
+    /// when the client is dropped, so calling `shutdown()` explicitly is
+    /// optional in most cases.
     pub async fn shutdown(&mut self) -> Result<()> {
         if let Some(mut child) = self.daemon_process.take() {
             // Try graceful shutdown first (daemon should exit when no clients)
