@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 pub mod client;
 pub mod server;
+pub mod transport;
 
 pub use client::DaemonClient;
 pub use server::DaemonServer;
@@ -28,7 +29,7 @@ pub trait RpcMethod: Serialize + DeserializeOwned + Send + Sync {
 }
 
 // RPC request structure
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(bound = "M: Serialize + DeserializeOwned")]
 pub struct RpcRequest<M: RpcMethod> {
     pub method: M,

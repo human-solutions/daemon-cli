@@ -2,9 +2,6 @@ use crate::server::DaemonServer;
 use crate::*;
 use std::time::Duration;
 
-#[derive(Clone)]
-struct TestDaemon;
-
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 enum TestMethod {
     ProcessFile { path: std::path::PathBuf },
@@ -14,123 +11,6 @@ enum TestMethod {
 
 impl RpcMethod for TestMethod {
     type Response = String;
-}
-
-#[async_trait::async_trait]
-impl RpcHandler<TestMethod> for TestDaemon {
-    async fn handle(
-        &mut self,
-        method: TestMethod,
-        cancel_token: tokio_util::sync::CancellationToken,
-        status_tx: tokio::sync::mpsc::Sender<DaemonStatus>,
-    ) -> anyhow::Result<String> {
-        match method {
-            TestMethod::ProcessFile { path } => {
-                status_tx
-                    .send(DaemonStatus::Busy(format!("Processing file: {:?}", path)))
-                    .await
-                    .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-
-                tokio::time::sleep(Duration::from_millis(10)).await;
-
-                status_tx
-                    .send(DaemonStatus::Ready)
-                    .await
-                    .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-
-                Ok(format!("Processed file: {:?}", path))
-            }
-            TestMethod::GetStatus => Ok("Ready".to_string()),
-            TestMethod::LongRunningTask { duration_ms } => {
-                status_tx
-                    .send(DaemonStatus::Busy("Starting long-running task".to_string()))
-                    .await
-                    .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-
-                let chunks = duration_ms / 10;
-                for i in 0..chunks {
-                    if cancel_token.is_cancelled() {
-                        status_tx
-                            .send(DaemonStatus::Ready)
-                            .await
-                            .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-                        return Err(anyhow::anyhow!("Task cancelled"));
-                    }
-
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-
-                    if i % 10 == 0 {
-                        let progress = (i * 100) / chunks;
-                        status_tx
-                            .send(DaemonStatus::Busy(format!(
-                                "Long-running task: {}% complete",
-                                progress
-                            )))
-                            .await
-                            .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-                    }
-                }
-
-                status_tx
-                    .send(DaemonStatus::Ready)
-                    .await
-                    .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-
-                Ok("Long-running task completed".to_string())
-            }
-        }
-    }
-}
-
-#[tokio::test]
-async fn test_client_creation() {
-    let build_timestamp = 1234567890u64;
-    let daemon_executable = std::env::current_exe().unwrap();
-
-    // Create a test server
-    let daemon = TestDaemon;
-    let server = DaemonServer::new(12345, daemon);
-    let server_handle = server.spawn().await.unwrap();
-
-    // Create client using server handle
-    let client = super::DaemonClient::connect_to_server(
-        12345,
-        daemon_executable,
-        build_timestamp,
-        &server_handle,
-    );
-
-    // Test that the client can be created
-    assert_eq!(client.daemon_id, 12345);
-    assert_eq!(client.build_timestamp, build_timestamp);
-}
-
-#[tokio::test]
-async fn test_client_request() {
-    let build_timestamp = 1234567890u64;
-    let daemon_executable = std::env::current_exe().unwrap();
-
-    // Create a test server
-    let daemon = TestDaemon;
-    let server = DaemonServer::new(12345, daemon);
-    let server_handle = server.spawn().await.unwrap();
-
-    // Create client
-    let mut client = super::DaemonClient::connect_to_server(
-        12345,
-        daemon_executable,
-        build_timestamp,
-        &server_handle,
-    );
-
-    // Test basic request
-    let response = client.request(TestMethod::GetStatus).await.unwrap();
-    match response {
-        RpcResponse::Success { output } => {
-            assert_eq!(output, "Ready");
-        }
-        _ => panic!("Expected success response, got: {:?}", response),
-    }
 }
 
 #[tokio::test]

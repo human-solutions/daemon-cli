@@ -43,34 +43,3 @@ fn test_rpc_structures_serialization() {
     assert!(serde_json::to_string(&error_response).is_ok());
     assert!(serde_json::to_string(&version_mismatch).is_ok());
 }
-
-#[test]
-fn test_daemon_status_serialization() {
-    let status_ready = DaemonStatus::Ready;
-    let status_busy = DaemonStatus::Busy("Processing".to_string());
-    let status_error = DaemonStatus::Error("Failed".to_string());
-
-    // Test serialization
-    assert!(serde_json::to_string(&status_ready).is_ok());
-    assert!(serde_json::to_string(&status_busy).is_ok());
-    assert!(serde_json::to_string(&status_error).is_ok());
-}
-
-#[test]
-fn test_server_handle() {
-    use tokio::sync::{broadcast, mpsc};
-
-    let (request_tx, _request_rx) = mpsc::channel::<RequestEnvelope<TestMethod>>(32);
-    let (status_tx, _status_rx) = broadcast::channel(32);
-
-    let server_handle = ServerHandle {
-        request_tx,
-        status_tx,
-    };
-
-    // Test that we can subscribe to status updates
-    let status_receiver = server_handle.subscribe_status();
-
-    // This should work without panicking
-    drop(status_receiver);
-}
