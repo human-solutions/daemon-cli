@@ -17,5 +17,4 @@ serde_json = "1.0"
 name = "cli"
 path = "examples/cli.rs"
 
-
 [dev-dependencies]

@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
 fn print_usage() {
     println!("🎯 daemon-rpc All-in-One Example");
     println!("=================================");
-    println!("Usage: cargo run --example all_in_one -- <mode> [options]");
+    println!("Usage: cargo run --example cli -- <mode> [options]");
     println!();
     println!("Modes:");
     println!("  daemon     Start daemon server");
@@ -41,9 +41,9 @@ fn print_usage() {
     println!("  --rich                    Enable rich mode with startup delay");
     println!();
     println!("Examples:");
-    println!("  cargo run --example all_in_one -- daemon --daemon-id 1000 --rich");
-    println!("  cargo run --example all_in_one -- demo");
-    println!("  cargo run --example all_in_one -- test");
+    println!("  cargo run --example cli -- daemon --daemon-id 1000 --rich");
+    println!("  cargo run --example cli -- demo");
+    println!("  cargo run --example cli -- test");
 }
 
 async fn run_daemon_mode() -> Result<()> {
@@ -67,7 +67,7 @@ async fn run_demo_mode() -> Result<()> {
     // Build daemon first
     println!("🔨 Building daemon...");
     let _ = std::process::Command::new("cargo")
-        .args(["build", "--example", "all_in_one"])
+        .args(["build", "--example", "cli"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output();
 
@@ -216,7 +216,7 @@ async fn run_test_mode() -> Result<()> {
 
     // Build daemon
     let _ = std::process::Command::new("cargo")
-        .args(["build", "--example", "all_in_one"])
+        .args(["build", "--example", "cli"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output();
 

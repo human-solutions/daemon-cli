@@ -160,7 +160,7 @@ impl<M: RpcMethod> DaemonClient<M> {
         // This is a simplified implementation - in production you'd want more sophisticated process management
         let _ = tokio::process::Command::new("pkill")
             .arg("-f")
-            .arg(format!("all_in_one.*daemon.*--daemon-id.*{daemon_id}"))
+            .arg(format!("cli.*daemon.*--daemon-id.*{daemon_id}"))
             .output()
             .await;
 
@@ -257,56 +257,6 @@ impl<M: RpcMethod> DaemonClient<M> {
             _ = tokio::time::sleep(Duration::from_millis(500)) => {
                 Ok(false) // Timeout, assume failed
             }
-        }
-    }
-
-    /// Check if daemon process is healthy and restart if needed
-    pub async fn ensure_daemon_healthy(&mut self) -> Result<()> {
-        // Only applicable for managed processes
-        let needs_restart = if let Some(child) = &mut self.daemon_process {
-            // Check if process is still alive
-            match child.try_wait() {
-                Ok(Some(_exit_status)) => {
-                    // Process has exited - needs restart
-                    true
-                }
-                Ok(None) => {
-                    // Process is alive - try to ping it
-                    match Self::ping_daemon_static(self.daemon_id).await {
-                        Ok(_) => {
-                            // Daemon is responsive
-                            false
-                        }
-                        Err(_) => {
-                            // Daemon is not responsive - kill and restart
-                            let _ = child.kill().await;
-                            true
-                        }
-                    }
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!(
-                        "Failed to check daemon process status: {}",
-                        e
-                    ));
-                }
-            }
-        } else {
-            false
-        };
-
-        if needs_restart {
-            self.restart_daemon().await?;
-        }
-
-        Ok(())
-    }
-
-    async fn ping_daemon_static(daemon_id: u64) -> Result<()> {
-        // Try to establish a new connection to test if daemon is responsive
-        match SocketClient::connect(daemon_id).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(anyhow::anyhow!("Daemon ping failed: {}", e)),
         }
     }
 

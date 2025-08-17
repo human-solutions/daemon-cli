@@ -120,11 +120,17 @@ async fn test_daemon_crash_recovery() {
     // Give some time for the process to die
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // Ensure daemon health - should detect crash and restart
-    client.ensure_daemon_healthy().await.unwrap();
+    // Create a new client - this will detect the crashed daemon and restart it
+    let mut new_client = super::DaemonClient::connect(
+        daemon_id,
+        get_test_daemon_path(), // Use function call instead of moved variable
+        1234567890,
+    )
+    .await
+    .unwrap();
 
     // Verify daemon is working again after restart
-    let response = client.request(TestMethod::GetStatus).await.unwrap();
+    let response = new_client.request(TestMethod::GetStatus).await.unwrap();
     match response {
         RpcResponse::Success { output } => {
             assert!(
@@ -140,7 +146,7 @@ async fn test_daemon_crash_recovery() {
     }
 
     // Clean up
-    let _ = client.shutdown().await;
+    let _ = new_client.shutdown().await;
 }
 
 // Helper functions for tests
@@ -148,16 +154,16 @@ async fn test_daemon_crash_recovery() {
 fn get_test_daemon_path() -> std::path::PathBuf {
     // First try to build the example to ensure it exists
     let _ = std::process::Command::new("cargo")
-        .args(["build", "--example", "all_in_one"])
+        .args(["build", "--example", "cli"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output();
 
-    // Get the path to the all_in_one example binary
+    // Get the path to the cli example binary
     let mut exe_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     exe_path.push("target");
     exe_path.push("debug");
     exe_path.push("examples");
-    exe_path.push("all_in_one");
+    exe_path.push("cli");
 
     // On Windows, add .exe extension
     if cfg!(windows) {
@@ -271,9 +277,8 @@ async fn test_version_auto_restart() {
             );
         }
         RpcResponse::VersionMismatch { .. } => {
-            // If we get version mismatch, the automatic restart didn't work as expected
-            // Let's manually retry to verify restart functionality
-            client.ensure_daemon_healthy().await.unwrap();
+            // Version mismatch should trigger automatic restart
+            // Make another request to verify restart worked
             let retry_response = client.request(TestMethod::GetStatus).await.unwrap();
             match retry_response {
                 RpcResponse::Success { output } => {
@@ -284,7 +289,7 @@ async fn test_version_auto_restart() {
                     );
                 }
                 _ => panic!(
-                    "Expected success after manual restart, got: {:?}",
+                    "Expected success after automatic restart, got: {:?}",
                     retry_response
                 ),
             }
