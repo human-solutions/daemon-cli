@@ -6,12 +6,8 @@ use tokio_util::sync::CancellationToken;
 
 // Connection abstraction for different transport types
 pub enum Connection<M: RpcMethod> {
-    InMemory {
-        server_handle: ServerHandle<M>,
-    },
-    Socket {
-        socket_client: SocketClient,
-    },
+    InMemory { server_handle: ServerHandle<M> },
+    Socket { socket_client: SocketClient },
 }
 
 impl<M: RpcMethod> Connection<M> {
@@ -44,7 +40,7 @@ impl<M: RpcMethod> Connection<M> {
             }
             Connection::Socket { socket_client } => {
                 // Phase 2: Unix socket communication
-                
+
                 // Send request over socket
                 socket_client
                     .send_message(&SocketMessage::Request(request))

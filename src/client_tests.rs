@@ -153,11 +153,9 @@ async fn test_daemon_auto_spawn() {
     cleanup_daemon(daemon_id).await;
 
     // Connect should automatically spawn the daemon
-    let mut client = super::DaemonClient::connect(
-        daemon_id,
-        daemon_executable,
-        1234567890,
-    ).await.unwrap();
+    let mut client = super::DaemonClient::connect(daemon_id, daemon_executable, 1234567890)
+        .await
+        .unwrap();
 
     // Verify we can make requests to the spawned daemon
     let response = client.request(TestMethod::GetStatus).await.unwrap();
@@ -169,10 +167,13 @@ async fn test_daemon_auto_spawn() {
     }
 
     // Test a more complex request
-    let response = client.request(TestMethod::ProcessFile {
-        path: "/tmp/auto-spawn-test.txt".into(),
-    }).await.unwrap();
-    
+    let response = client
+        .request(TestMethod::ProcessFile {
+            path: "/tmp/auto-spawn-test.txt".into(),
+        })
+        .await
+        .unwrap();
+
     match response {
         RpcResponse::Success { output } => {
             assert!(output.contains("Processed file"));
@@ -193,11 +194,9 @@ async fn test_daemon_crash_recovery() {
     cleanup_daemon(daemon_id).await;
 
     // Connect and spawn daemon
-    let mut client = super::DaemonClient::connect(
-        daemon_id,
-        daemon_executable,
-        1234567890,
-    ).await.unwrap();
+    let mut client = super::DaemonClient::connect(daemon_id, daemon_executable, 1234567890)
+        .await
+        .unwrap();
 
     // Verify daemon is working
     let response = client.request(TestMethod::GetStatus).await.unwrap();
@@ -220,7 +219,10 @@ async fn test_daemon_crash_recovery() {
         RpcResponse::Success { output } => {
             assert_eq!(output, "Ready");
         }
-        _ => panic!("Expected success response after restart, got: {:?}", response),
+        _ => panic!(
+            "Expected success response after restart, got: {:?}",
+            response
+        ),
     }
 
     // Clean up
@@ -242,24 +244,24 @@ fn get_test_daemon_path() -> std::path::PathBuf {
     exe_path.push("debug");
     exe_path.push("examples");
     exe_path.push("test_daemon");
-    
+
     // On Windows, add .exe extension
     if cfg!(windows) {
         exe_path.set_extension("exe");
     }
-    
+
     exe_path
 }
 
 async fn cleanup_daemon(daemon_id: u64) {
     use crate::transport::socket_path;
-    
+
     // Remove socket file if it exists
     let socket_path = socket_path(daemon_id);
     if socket_path.exists() {
         let _ = std::fs::remove_file(&socket_path);
     }
-    
+
     // Give time for cleanup
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 }
@@ -355,7 +357,9 @@ async fn test_version_mismatch_detection() {
     // Request should return version mismatch
     let response = client.request(TestMethod::GetStatus).await.unwrap();
     match response {
-        RpcResponse::VersionMismatch { daemon_build_timestamp } => {
+        RpcResponse::VersionMismatch {
+            daemon_build_timestamp,
+        } => {
             assert_eq!(daemon_build_timestamp, 1000);
         }
         _ => panic!("Expected version mismatch response, got: {:?}", response),
@@ -390,7 +394,9 @@ async fn test_version_auto_restart() {
         daemon_id,
         daemon_executable,
         2000, // Newer timestamp
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
     // Make a request - this should trigger version mismatch detection and auto-restart
     let response = client.request(TestMethod::GetStatus).await.unwrap();
@@ -407,7 +413,10 @@ async fn test_version_auto_restart() {
                 RpcResponse::Success { output } => {
                     assert_eq!(output, "Ready");
                 }
-                _ => panic!("Expected success after manual restart, got: {:?}", retry_response),
+                _ => panic!(
+                    "Expected success after manual restart, got: {:?}",
+                    retry_response
+                ),
             }
         }
         _ => panic!("Unexpected response type: {:?}", response),

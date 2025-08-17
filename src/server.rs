@@ -171,7 +171,9 @@ where
                                                 daemon_build_timestamp: self.build_timestamp,
                                             };
                                         let _ = connection
-                                            .send_message(&SocketMessage::<M>::Response(version_mismatch))
+                                            .send_message(&SocketMessage::<M>::Response(
+                                                version_mismatch,
+                                            ))
                                             .await;
                                         continue;
                                     }
