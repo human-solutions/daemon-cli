@@ -14,22 +14,8 @@ bytes = "1.0"
 serde_json = "1.0"
 
 [[example]]
-name = "test_daemon"
-path = "examples/test_daemon.rs"
+name = "cli"
+path = "examples/cli.rs"
 
-[[example]]
-name = "file_processor_daemon"
-path = "examples/file_processor_daemon.rs"
-
-[[example]]
-name = "file_processor"
-path = "examples/file_processor.rs"
-
-[[example]]
-name = "file_processor_demo"
-path = "examples/file_processor_demo.rs"
-
-[dependencies.crossterm]
-version = "0.27"
 
 [dev-dependencies]

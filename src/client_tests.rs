@@ -1,14 +1,41 @@
 use crate::*;
+use std::path::PathBuf;
+
+// Use the same types as the all_in_one example for consistency
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub enum TestMethod {
+    ProcessFile {
+        path: PathBuf,
+        options: ProcessOptions,
+    },
+    GetStatus,
+    GetUptime,
+    LongTask {
+        duration_seconds: u64,
+        description: String,
+    },
+    QuickTask {
+        message: String,
+    },
+}
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-enum TestMethod {
-    ProcessFile { path: std::path::PathBuf },
-    GetStatus,
-    LongRunningTask { duration_ms: u64 },
+pub struct ProcessOptions {
+    pub compress: bool,
+    pub validate: bool,
+    pub backup: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+pub struct TestResult {
+    pub processed_bytes: u64,
+    pub files_created: Vec<String>,
+    pub duration_ms: u64,
+    pub status: String,
 }
 
 impl RpcMethod for TestMethod {
-    type Response = String;
+    type Response = TestResult;
 }
 
 // Phase 3 Tests - Process Management
@@ -31,7 +58,11 @@ async fn test_daemon_auto_spawn() {
     let response = client.request(TestMethod::GetStatus).await.unwrap();
     match response {
         RpcResponse::Success { output } => {
-            assert_eq!(output, "Ready");
+            assert!(
+                output.status.contains("ready"),
+                "Expected ready status, got: {}",
+                output.status
+            );
         }
         _ => panic!("Expected success response, got: {:?}", response),
     }
@@ -40,13 +71,22 @@ async fn test_daemon_auto_spawn() {
     let response = client
         .request(TestMethod::ProcessFile {
             path: "/tmp/auto-spawn-test.txt".into(),
+            options: ProcessOptions {
+                compress: false,
+                validate: false,
+                backup: false,
+            },
         })
         .await
         .unwrap();
 
     match response {
         RpcResponse::Success { output } => {
-            assert!(output.contains("Processed file"));
+            assert!(
+                output.status.contains("processed"),
+                "Expected processed status, got: {}",
+                output.status
+            );
         }
         _ => panic!("Expected success response, got: {:?}", response),
     }
@@ -87,7 +127,11 @@ async fn test_daemon_crash_recovery() {
     let response = client.request(TestMethod::GetStatus).await.unwrap();
     match response {
         RpcResponse::Success { output } => {
-            assert_eq!(output, "Ready");
+            assert!(
+                output.status.contains("ready"),
+                "Expected ready status, got: {}",
+                output.status
+            );
         }
         _ => panic!(
             "Expected success response after restart, got: {:?}",
@@ -104,16 +148,16 @@ async fn test_daemon_crash_recovery() {
 fn get_test_daemon_path() -> std::path::PathBuf {
     // First try to build the example to ensure it exists
     let _ = std::process::Command::new("cargo")
-        .args(["build", "--example", "test_daemon"])
+        .args(["build", "--example", "all_in_one"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output();
 
-    // Get the path to the test_daemon example binary
+    // Get the path to the all_in_one example binary
     let mut exe_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     exe_path.push("target");
     exe_path.push("debug");
     exe_path.push("examples");
-    exe_path.push("test_daemon");
+    exe_path.push("all_in_one");
 
     // On Windows, add .exe extension
     if cfg!(windows) {
@@ -148,6 +192,7 @@ async fn test_version_mismatch_detection() {
 
     // Spawn daemon with old build timestamp
     let _old_daemon = tokio::process::Command::new(&daemon_executable)
+        .arg("daemon")
         .arg("--daemon-id")
         .arg(daemon_id.to_string())
         .arg("--build-timestamp")
@@ -190,8 +235,9 @@ async fn test_version_auto_restart() {
     // Ensure no daemon is running
     cleanup_daemon(daemon_id).await;
 
-    // First, start a daemon with old build timestamp by spawning the test_daemon with old timestamp
+    // First, start a daemon with old build timestamp by spawning the all_in_one with old timestamp
     let mut old_daemon = tokio::process::Command::new(&daemon_executable)
+        .arg("daemon")
         .arg("--daemon-id")
         .arg(daemon_id.to_string())
         .arg("--build-timestamp")
@@ -218,7 +264,11 @@ async fn test_version_auto_restart() {
     let response = client.request(TestMethod::GetStatus).await.unwrap();
     match response {
         RpcResponse::Success { output } => {
-            assert_eq!(output, "Ready");
+            assert!(
+                output.status.contains("ready"),
+                "Expected ready status, got: {}",
+                output.status
+            );
         }
         RpcResponse::VersionMismatch { .. } => {
             // If we get version mismatch, the automatic restart didn't work as expected
@@ -227,7 +277,11 @@ async fn test_version_auto_restart() {
             let retry_response = client.request(TestMethod::GetStatus).await.unwrap();
             match retry_response {
                 RpcResponse::Success { output } => {
-                    assert_eq!(output, "Ready");
+                    assert!(
+                        output.status.contains("ready"),
+                        "Expected ready status, got: {}",
+                        output.status
+                    );
                 }
                 _ => panic!(
                     "Expected success after manual restart, got: {:?}",
@@ -260,7 +314,10 @@ async fn test_task_cancellation_via_message() {
     let start_time = std::time::Instant::now();
     let client_task = tokio::spawn(async move {
         client
-            .request(TestMethod::LongRunningTask { duration_ms: 5000 })
+            .request(TestMethod::LongTask {
+                duration_seconds: 5,
+                description: "Test cancellation task".to_string(),
+            })
             .await
     });
 

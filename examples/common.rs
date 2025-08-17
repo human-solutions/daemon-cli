@@ -2,21 +2,8 @@ use daemon_rpc::prelude::*;
 use std::path::PathBuf;
 use std::time::Duration;
 
-#[derive(Clone)]
-struct FileProcessorDaemon {
-    startup_time: std::time::Instant,
-}
-
-impl FileProcessorDaemon {
-    fn new() -> Self {
-        Self {
-            startup_time: std::time::Instant::now(),
-        }
-    }
-}
-
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub enum FileMethod {
+pub enum TestMethod {
     ProcessFile {
         path: PathBuf,
         options: ProcessOptions,
@@ -26,6 +13,9 @@ pub enum FileMethod {
     LongTask {
         duration_seconds: u64,
         description: String,
+    },
+    QuickTask {
+        message: String,
     },
 }
 
@@ -37,27 +27,62 @@ pub struct ProcessOptions {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
-pub struct ProcessResult {
+pub struct TestResult {
     pub processed_bytes: u64,
     pub files_created: Vec<String>,
     pub duration_ms: u64,
     pub status: String,
 }
 
-impl RpcMethod for FileMethod {
-    type Response = ProcessResult;
+impl RpcMethod for TestMethod {
+    type Response = TestResult;
+}
+
+#[derive(Clone)]
+pub struct DemoDaemon {
+    startup_time: std::time::Instant,
+    rich_mode: bool, // true for file_processor mode, false for test mode
+}
+
+impl DemoDaemon {
+    pub fn new(rich_mode: bool) -> Self {
+        Self {
+            startup_time: std::time::Instant::now(),
+            rich_mode,
+        }
+    }
+
+    pub async fn simulate_startup_delay(&self) {
+        if self.rich_mode {
+            // Rich mode: 2-second startup with progress messages
+            println!("Initializing daemon subsystems...");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            println!("Loading handlers...");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            println!("Setting up engines...");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            println!("Preparing systems...");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            println!("Daemon ready!");
+        }
+        // Test mode: no startup delay
+    }
 }
 
 #[async_trait]
-impl RpcHandler<FileMethod> for FileProcessorDaemon {
+impl RpcHandler<TestMethod> for DemoDaemon {
     async fn handle(
         &mut self,
-        method: FileMethod,
+        method: TestMethod,
         cancel_token: CancellationToken,
         status_tx: tokio::sync::mpsc::Sender<DaemonStatus>,
-    ) -> Result<ProcessResult> {
+    ) -> Result<TestResult> {
         match method {
-            FileMethod::ProcessFile { path, options } => {
+            TestMethod::ProcessFile { path, options } => {
                 let start_time = std::time::Instant::now();
 
                 status_tx
@@ -66,62 +91,29 @@ impl RpcHandler<FileMethod> for FileProcessorDaemon {
                         path
                     )))
                     .await
-                    .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
+                    .ok();
 
-                // Simulate file analysis phase
-                for i in 0..20 {
+                // Simulate processing based on options and mode
+                let steps = if self.rich_mode { 50 } else { 5 };
+                for i in 0..steps {
                     if cancel_token.is_cancelled() {
                         status_tx.send(DaemonStatus::Ready).await.ok();
-                        return Err(anyhow::anyhow!(
-                            "File processing cancelled during analysis phase"
-                        ));
+                        return Err(anyhow::anyhow!("File processing cancelled"));
                     }
 
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    tokio::time::sleep(Duration::from_millis(if self.rich_mode {
+                        100
+                    } else {
+                        10
+                    }))
+                    .await;
 
-                    if i % 5 == 0 {
-                        let progress = (i * 100) / 20;
-                        status_tx
-                            .send(DaemonStatus::Busy(format!(
-                                "Analyzing {:?}: {}% complete",
-                                path, progress
-                            )))
-                            .await
-                            .ok();
-                    }
-                }
-
-                // Simulate processing phase based on options
-                let processing_steps = if options.compress { 30 } else { 15 };
-                let processing_steps = if options.validate {
-                    processing_steps + 10
-                } else {
-                    processing_steps
-                };
-                let processing_steps = if options.backup {
-                    processing_steps + 5
-                } else {
-                    processing_steps
-                };
-
-                for i in 0..processing_steps {
-                    if cancel_token.is_cancelled() {
-                        status_tx.send(DaemonStatus::Ready).await.ok();
-                        return Err(anyhow::anyhow!(
-                            "File processing cancelled during processing phase"
-                        ));
-                    }
-
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-
-                    if i % 3 == 0 {
-                        let progress = (i * 100) / processing_steps;
-                        let phase = if options.compress && i < 30 {
+                    if i % (steps / 5) == 0 {
+                        let progress = (i * 100) / steps;
+                        let phase = if options.compress && i < steps / 2 {
                             "compressing"
-                        } else if options.validate && i < 40 {
+                        } else if options.validate {
                             "validating"
-                        } else if options.backup {
-                            "backing up"
                         } else {
                             "processing"
                         };
@@ -138,9 +130,7 @@ impl RpcHandler<FileMethod> for FileProcessorDaemon {
 
                 status_tx.send(DaemonStatus::Ready).await.ok();
 
-                let duration = start_time.elapsed();
                 let mut files_created = vec![format!("{}.processed", path.display())];
-
                 if options.compress {
                     files_created.push(format!("{}.gz", path.display()));
                 }
@@ -148,24 +138,28 @@ impl RpcHandler<FileMethod> for FileProcessorDaemon {
                     files_created.push(format!("{}.backup", path.display()));
                 }
 
-                Ok(ProcessResult {
-                    processed_bytes: 1024 * 1024 * 5, // Simulate 5MB processed
+                Ok(TestResult {
+                    processed_bytes: if self.rich_mode {
+                        1024 * 1024 * 5
+                    } else {
+                        1024
+                    },
                     files_created,
-                    duration_ms: duration.as_millis() as u64,
+                    duration_ms: start_time.elapsed().as_millis() as u64,
                     status: "Successfully processed file".to_string(),
                 })
             }
 
-            FileMethod::GetStatus => Ok(ProcessResult {
+            TestMethod::GetStatus => Ok(TestResult {
                 processed_bytes: 0,
                 files_created: vec![],
                 duration_ms: 0,
                 status: "Daemon ready for processing".to_string(),
             }),
 
-            FileMethod::GetUptime => {
+            TestMethod::GetUptime => {
                 let uptime = self.startup_time.elapsed();
-                Ok(ProcessResult {
+                Ok(TestResult {
                     processed_bytes: 0,
                     files_created: vec![],
                     duration_ms: uptime.as_millis() as u64,
@@ -173,7 +167,7 @@ impl RpcHandler<FileMethod> for FileProcessorDaemon {
                 })
             }
 
-            FileMethod::LongTask {
+            TestMethod::LongTask {
                 duration_seconds,
                 description,
             } => {
@@ -184,7 +178,7 @@ impl RpcHandler<FileMethod> for FileProcessorDaemon {
                     .await
                     .ok();
 
-                let total_steps = duration_seconds * 10; // 100ms per step
+                let total_steps = duration_seconds * 10;
                 for i in 0..total_steps {
                     if cancel_token.is_cancelled() {
                         status_tx.send(DaemonStatus::Ready).await.ok();
@@ -194,7 +188,6 @@ impl RpcHandler<FileMethod> for FileProcessorDaemon {
                     tokio::time::sleep(Duration::from_millis(100)).await;
 
                     if i % 10 == 0 {
-                        // Update every second
                         let progress = (i * 100) / total_steps;
                         status_tx
                             .send(DaemonStatus::Busy(format!(
@@ -208,25 +201,61 @@ impl RpcHandler<FileMethod> for FileProcessorDaemon {
 
                 status_tx.send(DaemonStatus::Ready).await.ok();
 
-                let duration = start_time.elapsed();
-                Ok(ProcessResult {
-                    processed_bytes: duration_seconds * 1000, // Simulate bytes processed
+                Ok(TestResult {
+                    processed_bytes: duration_seconds * 1000,
                     files_created: vec![format!("{}_result.txt", description.replace(' ', "_"))],
-                    duration_ms: duration.as_millis() as u64,
+                    duration_ms: start_time.elapsed().as_millis() as u64,
                     status: format!("Completed: {}", description),
+                })
+            }
+
+            TestMethod::QuickTask { message } => {
+                status_tx
+                    .send(DaemonStatus::Busy(format!("Quick task: {}", message)))
+                    .await
+                    .ok();
+
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                status_tx.send(DaemonStatus::Ready).await.ok();
+
+                Ok(TestResult {
+                    processed_bytes: 100,
+                    files_created: vec![],
+                    duration_ms: 100,
+                    status: format!("Quick task completed: {}", message),
                 })
             }
         }
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+pub fn get_daemon_path() -> PathBuf {
+    let mut exe_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    exe_path.push("target");
+    exe_path.push("debug");
+    exe_path.push("examples");
+    exe_path.push("all_in_one");
 
-    // Parse command line arguments
+    if cfg!(windows) {
+        exe_path.set_extension("exe");
+    }
+
+    exe_path
+}
+
+pub fn get_build_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+pub fn parse_daemon_args() -> Result<(u64, u64, bool)> {
+    let args: Vec<String> = std::env::args().collect();
     let mut daemon_id = None;
     let mut build_timestamp = None;
+    let mut rich_mode = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -255,6 +284,10 @@ async fn main() -> Result<()> {
                     return Err(anyhow::anyhow!("--build-timestamp requires a value"));
                 }
             }
+            "--rich" => {
+                rich_mode = true;
+                i += 1;
+            }
             _ => {
                 i += 1;
             }
@@ -262,39 +295,9 @@ async fn main() -> Result<()> {
     }
 
     let daemon_id = daemon_id.ok_or_else(|| anyhow::anyhow!("--daemon-id is required"))?;
-    let build_timestamp = build_timestamp.unwrap_or_else(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-    });
+    let build_timestamp = build_timestamp.unwrap_or_else(get_build_timestamp);
 
-    println!(
-        "Starting file processor daemon with ID: {} (build timestamp: {})",
-        daemon_id, build_timestamp
-    );
-
-    // Simulate 2-second startup delay as per requirements
-    println!("Initializing file processor subsystems...");
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    println!("Loading file type handlers...");
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    println!("Setting up compression engines...");
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    println!("Preparing validation systems...");
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Create and start the daemon server
-    let daemon = FileProcessorDaemon::new();
-    let server = DaemonServer::new(daemon_id, build_timestamp, daemon);
-
-    println!("File processor daemon ready!");
-
-    // Run the socket server (this will block until shutdown)
-    server.spawn_with_socket().await?;
-
-    Ok(())
+    Ok((daemon_id, build_timestamp, rich_mode))
 }
+
+// Note: This is a module file, not a binary - used by all_in_one.rs

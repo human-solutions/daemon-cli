@@ -133,4 +133,3 @@ pub enum SocketMessage<M: RpcMethod> {
     Cancel,
     CancelAck,
 }
-

@@ -94,6 +94,7 @@ impl<M: RpcMethod> DaemonClient<M> {
     ) -> Result<(SocketClient, Option<tokio::process::Child>)> {
         // Spawn daemon process
         let mut child = Command::new(daemon_executable)
+            .arg("daemon")
             .arg("--daemon-id")
             .arg(daemon_id.to_string())
             .arg("--build-timestamp")
@@ -159,7 +160,7 @@ impl<M: RpcMethod> DaemonClient<M> {
         // This is a simplified implementation - in production you'd want more sophisticated process management
         let _ = tokio::process::Command::new("pkill")
             .arg("-f")
-            .arg(format!("test_daemon.*--daemon-id.*{daemon_id}"))
+            .arg(format!("all_in_one.*daemon.*--daemon-id.*{daemon_id}"))
             .output()
             .await;
 
