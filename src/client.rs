@@ -26,8 +26,10 @@ impl<M: RpcMethod> DaemonClient<M> {
     ) -> Result<Self> {
         // Try to connect to existing daemon first
         let socket_path = socket_path(daemon_id);
-        
-        let (socket_client, daemon_process) = if let Ok(existing_client) = SocketClient::connect(daemon_id).await {
+
+        let (socket_client, daemon_process) = if let Ok(existing_client) =
+            SocketClient::connect(daemon_id).await
+        {
             // Daemon is already running and responsive - use it
             (existing_client, None) // We don't manage existing daemons
         } else {
@@ -36,10 +38,10 @@ impl<M: RpcMethod> DaemonClient<M> {
                 // Clean up stale socket file
                 let _ = std::fs::remove_file(&socket_path);
             }
-            
+
             // Kill any zombie processes (best effort)
             Self::cleanup_stale_processes(daemon_id).await;
-            
+
             // Spawn new daemon
             Self::spawn_and_wait_for_ready(daemon_id, &daemon_executable, build_timestamp).await?
         };
@@ -258,30 +260,6 @@ impl<M: RpcMethod> DaemonClient<M> {
             let _ = std::fs::remove_file(&socket_path);
         }
         Ok(())
-    }
-
-    /// Backward compatibility: connect to existing daemon only
-    /// Note: This is rarely needed - prefer using connect() which handles everything automatically
-    pub async fn connect_via_socket(
-        daemon_id: u64,
-        daemon_executable: PathBuf,
-        build_timestamp: u64,
-    ) -> Result<Self> {
-        // Just try to connect without spawning
-        let socket_client = SocketClient::connect(daemon_id).await
-            .map_err(|e| anyhow::anyhow!("Failed to connect to existing daemon: {}", e))?;
-        
-        let (_status_tx, status_receiver) = broadcast::channel(32);
-
-        Ok(Self {
-            socket_client,
-            status_receiver,
-            daemon_id,
-            daemon_executable,
-            build_timestamp,
-            daemon_process: None, // We don't manage existing daemons
-            _phantom: std::marker::PhantomData,
-        })
     }
 }
 

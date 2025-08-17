@@ -1,5 +1,5 @@
 use crate::*;
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 #[derive(Clone)]
 struct TestDaemon;
@@ -81,7 +81,9 @@ impl RpcHandler<TestMethod> for TestDaemon {
     }
 }
 
-// Phase 2 Tests - Unix Socket Transport
+fn exe_path() -> PathBuf {
+    std::env::current_exe().unwrap()
+}
 
 #[tokio::test]
 async fn test_socket_single_task_enforcement() {
@@ -96,21 +98,13 @@ async fn test_socket_single_task_enforcement() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Create two socket clients
-    let mut client1 = crate::client::DaemonClient::connect_via_socket(
-        23456,
-        std::env::current_exe().unwrap(),
-        1234567890,
-    )
-    .await
-    .unwrap();
+    let mut client1 = DaemonClient::connect(23456, exe_path(), 1234567890)
+        .await
+        .unwrap();
 
-    let mut client2 = crate::client::DaemonClient::connect_via_socket(
-        23456,
-        std::env::current_exe().unwrap(),
-        1234567890,
-    )
-    .await
-    .unwrap();
+    let mut client2 = crate::client::DaemonClient::connect(23456, exe_path(), 1234567890)
+        .await
+        .unwrap();
 
     // Start a long-running task on client1
     let client1_task = tokio::spawn(async move {
@@ -167,13 +161,9 @@ async fn test_socket_message_framing() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Create socket client
-    let mut client = crate::client::DaemonClient::connect_via_socket(
-        34567,
-        std::env::current_exe().unwrap(),
-        1234567890,
-    )
-    .await
-    .unwrap();
+    let mut client = crate::client::DaemonClient::connect(34567, exe_path(), 1234567890)
+        .await
+        .unwrap();
 
     // Send multiple requests rapidly to test message framing
     for i in 0..10 {

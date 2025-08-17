@@ -213,7 +213,7 @@ async fn test_version_mismatch_detection() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Create client with newer build timestamp via socket
-    let mut client: super::DaemonClient<TestMethod> = super::DaemonClient::connect_via_socket(
+    let mut client: super::DaemonClient<TestMethod> = super::DaemonClient::connect(
         daemon_id,
         daemon_executable,
         2000, // Newer timestamp
@@ -232,4 +232,3 @@ async fn test_version_mismatch_detection() {
         _ => panic!("Expected version mismatch response, got: {:?}", response),
     }
 }
-

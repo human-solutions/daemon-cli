@@ -102,7 +102,7 @@ async fn run_demo_mode() -> Result<()> {
     });
 
     let mut demo_client: DaemonClient<TestMethod> =
-        DaemonClient::connect_via_socket(2000, get_daemon_path(), get_build_timestamp()).await?;
+        DaemonClient::connect(2000, get_daemon_path(), get_build_timestamp()).await?;
 
     let result = demo_client
         .request(TestMethod::ProcessFile {
@@ -148,10 +148,10 @@ async fn run_demo_mode() -> Result<()> {
 
 async fn demonstrate_cancellation() -> Result<()> {
     let mut task_client: DaemonClient<TestMethod> =
-        DaemonClient::connect_via_socket(2000, get_daemon_path(), get_build_timestamp()).await?;
+        DaemonClient::connect(2000, get_daemon_path(), get_build_timestamp()).await?;
 
     let mut cancel_client: DaemonClient<TestMethod> =
-        DaemonClient::connect_via_socket(2000, get_daemon_path(), get_build_timestamp()).await?;
+        DaemonClient::connect(2000, get_daemon_path(), get_build_timestamp()).await?;
 
     let task_future = task_client.request(TestMethod::LongTask {
         duration_seconds: 8,
@@ -191,7 +191,7 @@ async fn demonstrate_multiple_clients() -> Result<()> {
     // Connect 3 clients
     for i in 1..=3 {
         let client: DaemonClient<TestMethod> =
-            DaemonClient::connect_via_socket(2000, get_daemon_path(), build_timestamp).await?;
+            DaemonClient::connect(2000, get_daemon_path(), build_timestamp).await?;
         clients.push(client);
         println!("✅ Client {} connected", i);
     }
@@ -259,7 +259,7 @@ async fn run_test_mode() -> Result<()> {
     // Test cancellation
     println!("🛑 Testing cancellation...");
     let mut cancel_client: DaemonClient<TestMethod> =
-        DaemonClient::connect_via_socket(3000, get_daemon_path(), get_build_timestamp()).await?;
+        DaemonClient::connect(3000, get_daemon_path(), get_build_timestamp()).await?;
 
     let task_future = client.request(TestMethod::LongTask {
         duration_seconds: 5,
