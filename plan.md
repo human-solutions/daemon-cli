@@ -191,12 +191,72 @@ async fn test_version_update() {
 
 ---
 
+## **Phase 5: Full Example**
+*Complete CLI application demonstrating all framework features*
+
+### **Step 5.1: Interactive CLI Application**
+**Deliverable:** Production-ready example showing real-world usage patterns
+**Acceptance Criteria:**
+- ✅ **Daemon startup feedback**: CLI shows "busy" status during 2-second daemon initialization, then "ready"
+- ✅ **Long-running task management**: CLI can launch background tasks via daemon
+- ✅ **Real-time status display**: CLI continuously shows daemon status during task execution
+- ✅ **Task cancellation**: ESC key cancels running tasks gracefully
+- ✅ **Clean separation**: Ctrl-C exits CLI but leaves daemon running for other clients
+- ✅ **Multiple client support**: Demonstrate multiple CLI instances connecting to same daemon
+
+**Application Architecture:**
+```
+┌─────────────────┐    Unix Socket    ┌──────────────────┐
+│   CLI Client    │ ◄──────────────► │   Daemon Server  │
+│                 │                   │                  │
+│ • Status Display│                   │ • Long Tasks     │
+│ • ESC Handling  │                   │ • Status Updates │
+│ • Ctrl-C Exit   │                   │ • Cancellation   │
+└─────────────────┘                   └──────────────────┘
+```
+
+**Example Commands:**
+```bash
+# Start CLI (auto-spawns daemon)
+cargo run --example file_processor
+
+# CLI Interface:
+> Starting daemon... (busy for 2 seconds)
+> Daemon ready.
+> 
+> Commands:
+>   process <file>  - Process a file (long-running task)
+>   status         - Check daemon status  
+>   quit           - Exit CLI (daemon stays running)
+>
+> process large_file.txt
+> Processing large_file.txt... (progress updates)
+> [Press ESC to cancel]
+> Task completed successfully.
+```
+
+**Test Strategy:**
+```rust
+#[tokio::test]
+async fn test_full_cli_workflow() {
+    // Start daemon with 2-second startup delay
+    // Verify status progression: busy -> ready
+    // Launch long-running task
+    // Verify status updates during execution
+    // Test cancellation via signal
+    // Verify clean shutdown behavior
+}
+```
+
+---
+
 ## **Success Criteria for Each Phase:**
 
 **✅ Phase 1:** All core business logic tests pass with in-memory implementation *(COMPLETED)*
 **✅ Phase 2:** Same tests pass but using Unix socket transport *(COMPLETED)*
 **✅ Phase 3:** Full integration tests with automatic process spawning *(COMPLETED)*
 **Phase 4:** Version management integration tests pass
+**Phase 5:** Full CLI example with interactive features and real-world usage patterns
 
 ## **Key Implementation Notes:**
 
