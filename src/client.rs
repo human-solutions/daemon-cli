@@ -1,5 +1,5 @@
 use crate::connection::Connection;
-use crate::transport::{SocketClient, socket_path};
+use crate::transport::{SocketClient, SocketMessage, socket_path};
 use crate::*;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -232,6 +232,34 @@ impl<M: RpcMethod> DaemonClient<M> {
         }
 
         Ok(response)
+    }
+
+    /// Cancel the currently running task on the daemon
+    pub async fn cancel_current_task(&mut self) -> Result<bool> {
+        match &mut self.connection {
+            Connection::Socket { socket_client } => {
+                // Send cancel message
+                socket_client.send_message(&SocketMessage::<M>::Cancel).await?;
+                
+                // Wait for acknowledgment (with timeout)
+                tokio::select! {
+                    msg = socket_client.receive_message::<SocketMessage<M>>() => {
+                        match msg? {
+                            Some(SocketMessage::CancelAck) => Ok(true),
+                            _ => Ok(false),
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                        Ok(false) // Timeout, assume failed
+                    }
+                }
+            }
+            Connection::InMemory { .. } => {
+                // In-memory connections don't support cancellation yet
+                // Could be implemented by adding cancel channel to ServerHandle
+                Ok(false)
+            }
+        }
     }
 
     /// Check if daemon process is healthy and restart if needed

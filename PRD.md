@@ -60,9 +60,12 @@ Applications embed a build timestamp at compile time for version checking betwee
 - Ensures predictable resource usage
 
 **Cancellation Support:**
-- Long-running tasks can be cancelled mid-execution
-- Daemon immediately stops work and returns to ready state
-- Clean resource cleanup on cancellation
+- Cross-process task cancellation via dedicated cancel messages
+- Two-step cancellation: graceful signal (1s timeout) → force termination
+- Multiple clients can cancel tasks running on shared daemon
+- Cancellation acknowledgment prevents client-side timeouts
+- Handler receives cancellation token for cooperative cancellation
+- Automatic state cleanup and status updates on cancellation
 
 **Version Checking:**
 - Client and daemon compare build timestamps on every request

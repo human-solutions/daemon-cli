@@ -130,8 +130,8 @@ impl SocketConnection {
 pub enum SocketMessage<M: RpcMethod> {
     Request(RpcRequest<M>),
     Response(RpcResponse<M::Response>),
-    Subscribe,
-    Unsubscribe,
+    Cancel,
+    CancelAck,
 }
 
 /// Non-generic status message for broadcasting

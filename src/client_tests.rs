@@ -426,3 +426,62 @@ async fn test_version_auto_restart() {
     let _ = old_daemon.kill().await;
     let _ = client.shutdown().await;
 }
+
+#[tokio::test]
+async fn test_task_cancellation_via_message() {
+    let daemon_executable = get_test_daemon_path();
+    let daemon_id = 89012;
+
+    // Ensure no daemon is running
+    cleanup_daemon(daemon_id).await;
+
+    // Connect and spawn daemon
+    let mut client = super::DaemonClient::connect(
+        daemon_id,
+        daemon_executable,
+        1234567890,
+    ).await.unwrap();
+
+    // Start a long-running task
+    let start_time = std::time::Instant::now();
+    let client_task = tokio::spawn(async move {
+        client.request(TestMethod::LongRunningTask { duration_ms: 5000 }).await
+    });
+
+    // Wait a bit for task to start
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Create another client to send cancel message
+    let mut cancel_client: super::DaemonClient<TestMethod> = super::DaemonClient::connect_via_socket(
+        daemon_id,
+        get_test_daemon_path(),
+        1234567890,
+    ).await.unwrap();
+
+    // Cancel the running task
+    let cancelled = cancel_client.cancel_current_task().await.unwrap();
+    assert!(cancelled, "Should have successfully cancelled the task");
+
+    // Wait for the original request to complete
+    let result = client_task.await.unwrap();
+    let elapsed = std::time::Instant::now().duration_since(start_time);
+
+    // Task should complete quickly due to cancellation
+    assert!(elapsed < std::time::Duration::from_millis(2000), 
+        "Task should complete quickly due to cancellation, took: {:?}", elapsed);
+
+    // The result should be an error due to cancellation
+    match result.unwrap() {
+        RpcResponse::Error { error } => {
+            assert!(error.contains("cancelled"), "Expected cancellation error, got: {}", error);
+        }
+        RpcResponse::Success { .. } => {
+            // Task completed before cancellation - this is also valid
+            println!("Task completed before cancellation could take effect");
+        }
+        _ => panic!("Unexpected response type"),
+    }
+
+    // Clean up
+    let _ = cancel_client.shutdown().await;
+}
