@@ -1,8 +1,10 @@
-use crate::transport::{SocketClient, SocketMessage};
+use crate::transport::{SocketClient, SocketMessage, socket_path};
 use crate::*;
 use anyhow::Result;
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::sync::{broadcast, oneshot};
+use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 // Connection abstraction for different transport types
@@ -73,6 +75,7 @@ pub struct DaemonClient<M: RpcMethod> {
     pub daemon_executable: PathBuf,
     pub build_timestamp: u64,
     active_cancel_token: Option<CancellationToken>,
+    daemon_process: Option<tokio::process::Child>,
 }
 
 impl<M: RpcMethod> DaemonClient<M> {
@@ -97,6 +100,7 @@ impl<M: RpcMethod> DaemonClient<M> {
             daemon_executable,
             build_timestamp,
             active_cancel_token: None,
+            daemon_process: None, // No process for in-memory connections
         }
     }
 
@@ -118,16 +122,108 @@ impl<M: RpcMethod> DaemonClient<M> {
             daemon_executable,
             build_timestamp,
             active_cancel_token: None,
+            daemon_process: None, // Process management handled externally for Phase 2
         })
     }
 
-    // Original connect method (for future phases)
+    // Phase 3: Automatic daemon process spawning
     pub async fn connect(
-        _daemon_id: u64,
-        _daemon_executable: PathBuf,
-        _build_timestamp: u64,
+        daemon_id: u64,
+        daemon_executable: PathBuf,
+        build_timestamp: u64,
     ) -> Result<Self> {
-        todo!("Implement daemon process spawning in Phase 3")
+        // Step 1: Check if daemon is already running
+        let socket_path = socket_path(daemon_id);
+        
+        let (socket_client, daemon_process) = if socket_path.exists() {
+            // Try to connect to existing daemon
+            match SocketClient::connect(daemon_id).await {
+                Ok(client) => {
+                    // Daemon is running and connectable
+                    (client, None)
+                }
+                Err(_) => {
+                    // Socket exists but daemon is not responding - clean up and restart
+                    let _ = std::fs::remove_file(&socket_path);
+                    Self::spawn_daemon_and_connect(daemon_id, &daemon_executable).await?
+                }
+            }
+        } else {
+            // No socket file - daemon is not running, spawn it
+            Self::spawn_daemon_and_connect(daemon_id, &daemon_executable).await?
+        };
+
+        let (_status_tx, status_receiver) = broadcast::channel(32);
+        let connection = Connection::Socket { socket_client };
+
+        Ok(Self {
+            connection,
+            status_receiver,
+            daemon_id,
+            daemon_executable,
+            build_timestamp,
+            active_cancel_token: None,
+            daemon_process,
+        })
+    }
+
+    async fn spawn_daemon_and_connect(
+        daemon_id: u64,
+        daemon_executable: &PathBuf,
+    ) -> Result<(SocketClient, Option<tokio::process::Child>)> {
+        // Spawn daemon process
+        let mut child = Command::new(daemon_executable)
+            .arg("--daemon-id")
+            .arg(daemon_id.to_string())
+            .arg("--daemon-mode")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("Failed to spawn daemon process: {}", e))?;
+
+        // Wait for daemon to start and socket to become available
+        let socket_path = socket_path(daemon_id);
+        let mut attempts = 0;
+        const MAX_ATTEMPTS: u32 = 50; // 5 seconds total (50 * 100ms)
+        
+        loop {
+            attempts += 1;
+            
+            // Check if process is still alive
+            match child.try_wait() {
+                Ok(Some(exit_status)) => {
+                    return Err(anyhow::anyhow!("Daemon process exited during startup with status: {}", exit_status));
+                }
+                Ok(None) => {
+                    // Process is still running, continue
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!("Failed to check daemon process status: {}", e));
+                }
+            }
+
+            // Try to connect to socket
+            if socket_path.exists() {
+                match SocketClient::connect(daemon_id).await {
+                    Ok(socket_client) => {
+                        // Successfully connected
+                        return Ok((socket_client, Some(child)));
+                    }
+                    Err(_) => {
+                        // Socket exists but not ready yet, continue waiting
+                    }
+                }
+            }
+
+            if attempts >= MAX_ATTEMPTS {
+                // Kill the child process since it's not responding
+                let _ = child.kill().await;
+                return Err(anyhow::anyhow!("Daemon failed to start within timeout"));
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     pub async fn request(&mut self, method: M) -> Result<RpcResponse<M::Response>> {
@@ -151,6 +247,112 @@ impl<M: RpcMethod> DaemonClient<M> {
             Ok(())
         } else {
             Err(anyhow::anyhow!("No active request to cancel"))
+        }
+    }
+
+    /// Check if daemon process is healthy and restart if needed
+    pub async fn ensure_daemon_healthy(&mut self) -> Result<()> {
+        // Only applicable for managed processes
+        let needs_restart = if let Some(child) = &mut self.daemon_process {
+            // Check if process is still alive
+            match child.try_wait() {
+                Ok(Some(_exit_status)) => {
+                    // Process has exited - needs restart
+                    true
+                }
+                Ok(None) => {
+                    // Process is alive - try to ping it
+                    match Self::ping_daemon_static(self.daemon_id).await {
+                        Ok(_) => {
+                            // Daemon is responsive
+                            false
+                        }
+                        Err(_) => {
+                            // Daemon is not responsive - kill and restart
+                            let _ = child.kill().await;
+                            true
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!("Failed to check daemon process status: {}", e));
+                }
+            }
+        } else {
+            false
+        };
+
+        if needs_restart {
+            self.restart_daemon().await?;
+        }
+
+        Ok(())
+    }
+
+
+    async fn ping_daemon_static(daemon_id: u64) -> Result<()> {
+        // Try to establish a new connection to test if daemon is responsive
+        match SocketClient::connect(daemon_id).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(anyhow::anyhow!("Daemon ping failed: {}", e)),
+        }
+    }
+
+    async fn restart_daemon(&mut self) -> Result<()> {
+        // Clean up old socket file
+        let socket_path = socket_path(self.daemon_id);
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Spawn new daemon process
+        let (socket_client, daemon_process) = 
+            Self::spawn_daemon_and_connect(self.daemon_id, &self.daemon_executable).await?;
+
+        // Update connection and process handle
+        self.connection = Connection::Socket { socket_client };
+        self.daemon_process = daemon_process;
+
+        Ok(())
+    }
+
+    /// Gracefully shutdown the managed daemon process
+    pub async fn shutdown(&mut self) -> Result<()> {
+        if let Some(mut child) = self.daemon_process.take() {
+            // Try graceful shutdown first (daemon should exit when no clients)
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            
+            // Check if process exited gracefully
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    // Process exited gracefully
+                }
+                Ok(None) => {
+                    // Process still running, force kill
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                }
+                Err(_) => {
+                    // Error checking status, try to kill anyway
+                    let _ = child.kill().await;
+                }
+            }
+
+            // Clean up socket file
+            let socket_path = socket_path(self.daemon_id);
+            let _ = std::fs::remove_file(&socket_path);
+        }
+        Ok(())
+    }
+}
+
+impl<M: RpcMethod> Drop for DaemonClient<M> {
+    fn drop(&mut self) {
+        // Clean up daemon process on client drop (fire and forget)
+        if let Some(mut child) = self.daemon_process.take() {
+            tokio::spawn(async move {
+                // Try to kill the process
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            });
         }
     }
 }

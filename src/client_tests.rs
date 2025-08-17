@@ -140,3 +140,120 @@ async fn test_task_cancellation() {
         _ => panic!("Expected success response after task completion"),
     }
 }
+
+// Phase 3 Tests - Process Management
+
+#[tokio::test]
+async fn test_daemon_auto_spawn() {
+    // Get path to the test daemon binary
+    let daemon_executable = get_test_daemon_path();
+    let daemon_id = 45678;
+
+    // Ensure no daemon is running
+    cleanup_daemon(daemon_id).await;
+
+    // Connect should automatically spawn the daemon
+    let mut client = super::DaemonClient::connect(
+        daemon_id,
+        daemon_executable,
+        1234567890,
+    ).await.unwrap();
+
+    // Verify we can make requests to the spawned daemon
+    let response = client.request(TestMethod::GetStatus).await.unwrap();
+    match response {
+        RpcResponse::Success { output } => {
+            assert_eq!(output, "Ready");
+        }
+        _ => panic!("Expected success response, got: {:?}", response),
+    }
+
+    // Test a more complex request
+    let response = client.request(TestMethod::ProcessFile {
+        path: "/tmp/auto-spawn-test.txt".into(),
+    }).await.unwrap();
+    
+    match response {
+        RpcResponse::Success { output } => {
+            assert!(output.contains("Processed file"));
+        }
+        _ => panic!("Expected success response, got: {:?}", response),
+    }
+
+    // Clean up
+    let _ = client.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_daemon_crash_recovery() {
+    let daemon_executable = get_test_daemon_path();
+    let daemon_id = 56789;
+
+    // Ensure no daemon is running
+    cleanup_daemon(daemon_id).await;
+
+    // Connect and spawn daemon
+    let mut client = super::DaemonClient::connect(
+        daemon_id,
+        daemon_executable,
+        1234567890,
+    ).await.unwrap();
+
+    // Verify daemon is working
+    let response = client.request(TestMethod::GetStatus).await.unwrap();
+    assert!(matches!(response, RpcResponse::Success { .. }));
+
+    // Simulate daemon crash by killing the process
+    if let Some(child) = &mut client.daemon_process {
+        let _ = child.kill().await;
+    }
+
+    // Give some time for the process to die
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Ensure daemon health - should detect crash and restart
+    client.ensure_daemon_healthy().await.unwrap();
+
+    // Verify daemon is working again after restart
+    let response = client.request(TestMethod::GetStatus).await.unwrap();
+    match response {
+        RpcResponse::Success { output } => {
+            assert_eq!(output, "Ready");
+        }
+        _ => panic!("Expected success response after restart, got: {:?}", response),
+    }
+
+    // Clean up
+    let _ = client.shutdown().await;
+}
+
+// Helper functions for tests
+
+fn get_test_daemon_path() -> std::path::PathBuf {
+    // Get the path to the test_daemon example binary
+    let mut exe_path = std::env::current_exe().unwrap();
+    exe_path.pop(); // Remove the test binary name
+    exe_path.pop(); // Remove deps/
+    exe_path.push("examples");
+    exe_path.push("test_daemon");
+    
+    // On Windows, add .exe extension
+    if cfg!(windows) {
+        exe_path.set_extension("exe");
+    }
+    
+    exe_path
+}
+
+async fn cleanup_daemon(daemon_id: u64) {
+    use crate::transport::socket_path;
+    
+    // Remove socket file if it exists
+    let socket_path = socket_path(daemon_id);
+    if socket_path.exists() {
+        let _ = std::fs::remove_file(&socket_path);
+    }
+    
+    // Give time for cleanup
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+}
