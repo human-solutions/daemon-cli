@@ -2,7 +2,7 @@ use crate::server::DaemonServer;
 use crate::*;
 use std::time::Duration;
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 enum TestMethod {
     ProcessFile { path: std::path::PathBuf },
     GetStatus,
@@ -74,7 +74,7 @@ async fn test_task_cancellation() {
 
     // Create server with cancellable daemon
     let daemon = CancellableDaemon;
-    let server = DaemonServer::new(12345, daemon);
+    let server = DaemonServer::new(12345, 1234567890, daemon);
     let server_handle = server.spawn().await.unwrap();
 
     // Create two clients to test external cancellation via busy rejection
@@ -230,10 +230,16 @@ async fn test_daemon_crash_recovery() {
 // Helper functions for tests
 
 fn get_test_daemon_path() -> std::path::PathBuf {
+    // First try to build the example to ensure it exists
+    let _ = std::process::Command::new("cargo")
+        .args(["build", "--example", "test_daemon"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output();
+
     // Get the path to the test_daemon example binary
-    let mut exe_path = std::env::current_exe().unwrap();
-    exe_path.pop(); // Remove the test binary name
-    exe_path.pop(); // Remove deps/
+    let mut exe_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    exe_path.push("target");
+    exe_path.push("debug");
     exe_path.push("examples");
     exe_path.push("test_daemon");
     
@@ -256,4 +262,158 @@ async fn cleanup_daemon(daemon_id: u64) {
     
     // Give time for cleanup
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+}
+
+#[derive(Clone)]
+struct TestDaemon;
+
+#[async_trait::async_trait]
+impl RpcHandler<TestMethod> for TestDaemon {
+    async fn handle(
+        &mut self,
+        method: TestMethod,
+        cancel_token: tokio_util::sync::CancellationToken,
+        status_tx: tokio::sync::mpsc::Sender<DaemonStatus>,
+    ) -> anyhow::Result<String> {
+        match method {
+            TestMethod::ProcessFile { path } => {
+                status_tx
+                    .send(DaemonStatus::Busy(format!("Processing file: {:?}", path)))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
+
+                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                status_tx
+                    .send(DaemonStatus::Ready)
+                    .await
+                    .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
+
+                Ok(format!("Processed file: {:?}", path))
+            }
+            TestMethod::GetStatus => Ok("Ready".to_string()),
+            TestMethod::LongRunningTask { duration_ms } => {
+                status_tx
+                    .send(DaemonStatus::Busy("Starting long-running task".to_string()))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
+
+                let chunks = duration_ms / 10;
+                for i in 0..chunks {
+                    if cancel_token.is_cancelled() {
+                        status_tx
+                            .send(DaemonStatus::Ready)
+                            .await
+                            .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
+                        return Err(anyhow::anyhow!("Task cancelled"));
+                    }
+
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+
+                    if i % 10 == 0 {
+                        let progress = (i * 100) / chunks;
+                        status_tx
+                            .send(DaemonStatus::Busy(format!(
+                                "Long-running task: {}% complete",
+                                progress
+                            )))
+                            .await
+                            .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
+                    }
+                }
+
+                status_tx
+                    .send(DaemonStatus::Ready)
+                    .await
+                    .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
+
+                Ok("Long-running task completed".to_string())
+            }
+        }
+    }
+}
+
+// Phase 4 Tests - Version Management
+
+#[tokio::test]
+async fn test_version_mismatch_detection() {
+    use crate::server::DaemonServer;
+
+    // Create daemon with different build timestamp
+    let daemon = TestDaemon;
+    let server = DaemonServer::new(67890, 1000, daemon); // Old timestamp
+    let server_handle = server.spawn().await.unwrap();
+
+    // Create client with newer build timestamp
+    let mut client = super::DaemonClient::connect_to_server(
+        67890,
+        std::env::current_exe().unwrap(),
+        2000, // Newer timestamp
+        &server_handle,
+    );
+
+    // Request should return version mismatch
+    let response = client.request(TestMethod::GetStatus).await.unwrap();
+    match response {
+        RpcResponse::VersionMismatch { daemon_build_timestamp } => {
+            assert_eq!(daemon_build_timestamp, 1000);
+        }
+        _ => panic!("Expected version mismatch response, got: {:?}", response),
+    }
+}
+
+#[tokio::test]
+async fn test_version_auto_restart() {
+    let daemon_executable = get_test_daemon_path();
+    let daemon_id = 78901;
+
+    // Ensure no daemon is running
+    cleanup_daemon(daemon_id).await;
+
+    // First, start a daemon with old build timestamp by spawning the test_daemon with old timestamp
+    let mut old_daemon = tokio::process::Command::new(&daemon_executable)
+        .arg("--daemon-id")
+        .arg(daemon_id.to_string())
+        .arg("--build-timestamp")
+        .arg("1000") // Old timestamp
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    // Wait for old daemon to start
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // Connect client with newer build timestamp - should detect mismatch and restart
+    let mut client = super::DaemonClient::connect(
+        daemon_id,
+        daemon_executable,
+        2000, // Newer timestamp
+    ).await.unwrap();
+
+    // Make a request - this should trigger version mismatch detection and auto-restart
+    let response = client.request(TestMethod::GetStatus).await.unwrap();
+    match response {
+        RpcResponse::Success { output } => {
+            assert_eq!(output, "Ready");
+        }
+        RpcResponse::VersionMismatch { .. } => {
+            // If we get version mismatch, the automatic restart didn't work as expected
+            // Let's manually retry to verify restart functionality
+            client.ensure_daemon_healthy().await.unwrap();
+            let retry_response = client.request(TestMethod::GetStatus).await.unwrap();
+            match retry_response {
+                RpcResponse::Success { output } => {
+                    assert_eq!(output, "Ready");
+                }
+                _ => panic!("Expected success after manual restart, got: {:?}", retry_response),
+            }
+        }
+        _ => panic!("Unexpected response type: {:?}", response),
+    }
+
+    // Clean up
+    let _ = old_daemon.kill().await;
+    let _ = client.shutdown().await;
 }

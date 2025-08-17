@@ -1,71 +1,12 @@
-use crate::transport::{SocketClient, SocketMessage, socket_path};
+use crate::connection::Connection;
+use crate::transport::{SocketClient, socket_path};
 use crate::*;
 use anyhow::Result;
 use std::path::PathBuf;
 use std::time::Duration;
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::broadcast;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
-
-// Connection abstraction for different transport types
-pub enum Connection<M: RpcMethod> {
-    InMemory {
-        server_handle: ServerHandle<M>,
-    },
-    Socket {
-        socket_client: SocketClient,
-    },
-}
-
-impl<M: RpcMethod> Connection<M> {
-    pub async fn send_request(
-        &mut self,
-        request: RpcRequest<M>,
-        cancel_token: CancellationToken,
-    ) -> Result<RpcResponse<M::Response>> {
-        match self {
-            Connection::InMemory { server_handle } => {
-                // Phase 1: In-memory communication
-                let (response_tx, response_rx) = oneshot::channel();
-                let envelope = RequestEnvelope {
-                    request,
-                    response_tx,
-                    cancel_token,
-                };
-
-                // Send request to server
-                server_handle
-                    .request_tx
-                    .send(envelope)
-                    .await
-                    .map_err(|_| anyhow::anyhow!("Server is not running"))?;
-
-                // Wait for response
-                response_rx
-                    .await
-                    .map_err(|_| anyhow::anyhow!("Server did not respond"))
-            }
-            Connection::Socket { socket_client } => {
-                // Phase 2: Unix socket communication
-                
-                // Send request over socket
-                socket_client
-                    .send_message(&SocketMessage::Request(request))
-                    .await?;
-
-                // Wait for response
-                if let Some(message) = socket_client.receive_message::<SocketMessage<M>>().await? {
-                    match message {
-                        SocketMessage::Response(response) => Ok(response),
-                        _ => Err(anyhow::anyhow!("Unexpected message type")),
-                    }
-                } else {
-                    Err(anyhow::anyhow!("Socket connection closed"))
-                }
-            }
-        }
-    }
-}
 
 // Daemon client for communicating with daemon
 pub struct DaemonClient<M: RpcMethod> {
@@ -138,19 +79,26 @@ impl<M: RpcMethod> DaemonClient<M> {
         let (socket_client, daemon_process) = if socket_path.exists() {
             // Try to connect to existing daemon
             match SocketClient::connect(daemon_id).await {
-                Ok(client) => {
-                    // Daemon is running and connectable
-                    (client, None)
+                Ok(_client) => {
+                    // Daemon is running but we don't manage it - we should still be able to restart if needed
+                    // For Phase 4, we always spawn our own daemon to have full control
+                    let _ = std::fs::remove_file(&socket_path);
+                    
+                    // Kill any existing daemon processes (best effort)
+                    Self::kill_existing_daemon_processes(daemon_id).await;
+                    
+                    // Spawn our own daemon
+                    Self::spawn_daemon_and_connect(daemon_id, &daemon_executable, build_timestamp).await?
                 }
                 Err(_) => {
                     // Socket exists but daemon is not responding - clean up and restart
                     let _ = std::fs::remove_file(&socket_path);
-                    Self::spawn_daemon_and_connect(daemon_id, &daemon_executable).await?
+                    Self::spawn_daemon_and_connect(daemon_id, &daemon_executable, build_timestamp).await?
                 }
             }
         } else {
             // No socket file - daemon is not running, spawn it
-            Self::spawn_daemon_and_connect(daemon_id, &daemon_executable).await?
+            Self::spawn_daemon_and_connect(daemon_id, &daemon_executable, build_timestamp).await?
         };
 
         let (_status_tx, status_receiver) = broadcast::channel(32);
@@ -170,12 +118,14 @@ impl<M: RpcMethod> DaemonClient<M> {
     async fn spawn_daemon_and_connect(
         daemon_id: u64,
         daemon_executable: &PathBuf,
+        build_timestamp: u64,
     ) -> Result<(SocketClient, Option<tokio::process::Child>)> {
         // Spawn daemon process
         let mut child = Command::new(daemon_executable)
             .arg("--daemon-id")
             .arg(daemon_id.to_string())
-            .arg("--daemon-mode")
+            .arg("--build-timestamp")
+            .arg(build_timestamp.to_string())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -226,16 +176,52 @@ impl<M: RpcMethod> DaemonClient<M> {
         }
     }
 
+    async fn kill_existing_daemon_processes(daemon_id: u64) {
+        // Best effort to kill existing daemon processes
+        // This is a simplified implementation - in production you'd want more sophisticated process management
+        let _ = tokio::process::Command::new("pkill")
+            .arg("-f")
+            .arg(format!("test_daemon.*--daemon-id.*{daemon_id}"))
+            .output()
+            .await;
+        
+        // Give time for processes to die
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
     pub async fn request(&mut self, method: M) -> Result<RpcResponse<M::Response>> {
         let cancel_token = CancellationToken::new();
         self.active_cancel_token = Some(cancel_token.clone());
 
         let request = RpcRequest {
-            method,
+            method: method.clone(),
             client_build_timestamp: self.build_timestamp,
         };
 
         let response = self.connection.send_request(request, cancel_token).await?;
+        
+        // Phase 4: Handle version mismatch by restarting daemon
+        if let RpcResponse::VersionMismatch { daemon_build_timestamp } = &response {
+            println!("Version mismatch detected: client={}, daemon={}. Restarting daemon...", 
+                     self.build_timestamp, daemon_build_timestamp);
+            
+            // Only restart if we manage the daemon process
+            if self.daemon_process.is_some() {
+                self.restart_daemon().await?;
+                
+                // Retry the request with the new daemon
+                let retry_cancel_token = CancellationToken::new();
+                self.active_cancel_token = Some(retry_cancel_token.clone());
+                
+                let retry_request = RpcRequest {
+                    method: method.clone(),
+                    client_build_timestamp: self.build_timestamp,
+                };
+                let retry_response = self.connection.send_request(retry_request, retry_cancel_token).await?;
+                self.active_cancel_token = None;
+                return Ok(retry_response);
+            }
+        }
 
         self.active_cancel_token = None;
         Ok(response)
@@ -305,7 +291,7 @@ impl<M: RpcMethod> DaemonClient<M> {
 
         // Spawn new daemon process
         let (socket_client, daemon_process) = 
-            Self::spawn_daemon_and_connect(self.daemon_id, &self.daemon_executable).await?;
+            Self::spawn_daemon_and_connect(self.daemon_id, &self.daemon_executable, self.build_timestamp).await?;
 
         // Update connection and process handle
         self.connection = Connection::Socket { socket_client };

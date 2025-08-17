@@ -4,7 +4,7 @@ use std::time::Duration;
 #[derive(Clone)]
 struct TestDaemon;
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 enum TestMethod {
     ProcessFile { path: std::path::PathBuf },
     GetStatus,
@@ -87,7 +87,7 @@ impl RpcHandler<TestMethod> for TestDaemon {
 async fn test_socket_single_task_enforcement() {
     // Create and start socket server
     let daemon = TestDaemon;
-    let server = super::DaemonServer::new(23456, daemon);
+    let server = super::DaemonServer::new(23456, 1234567890, daemon);
 
     // Start server in background task
     let _server_task = tokio::spawn(async move { server.spawn_with_socket().await });
@@ -158,7 +158,7 @@ async fn test_socket_single_task_enforcement() {
 async fn test_socket_message_framing() {
     // Create and start socket server
     let daemon = TestDaemon;
-    let server = super::DaemonServer::new(34567, daemon);
+    let server = super::DaemonServer::new(34567, 1234567890, daemon);
 
     // Start server in background task
     let _server_task = tokio::spawn(async move { server.spawn_with_socket().await });

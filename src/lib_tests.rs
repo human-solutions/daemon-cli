@@ -1,6 +1,6 @@
 use crate::*;
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 enum TestMethod {
     ProcessFile { path: std::path::PathBuf },
     GetStatus,

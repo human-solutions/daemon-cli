@@ -14,6 +14,7 @@ enum ServerState {
 // Daemon server implementation
 pub struct DaemonServer<H, M: RpcMethod> {
     pub daemon_id: u64,
+    pub build_timestamp: u64,
     handler: H,
     _phantom: std::marker::PhantomData<M>,
 }
@@ -23,9 +24,10 @@ where
     H: RpcHandler<M> + Clone + 'static,
     M: RpcMethod + 'static,
 {
-    pub fn new(daemon_id: u64, handler: H) -> Self {
+    pub fn new(daemon_id: u64, build_timestamp: u64, handler: H) -> Self {
         Self {
             daemon_id,
+            build_timestamp,
             handler,
             _phantom: std::marker::PhantomData,
         }
@@ -48,6 +50,15 @@ where
             let _ = status_tx.send(DaemonStatus::Ready);
 
             while let Some(envelope) = request_rx.recv().await {
+                // Phase 4: Check build timestamp version compatibility
+                if envelope.request.client_build_timestamp != self.build_timestamp {
+                    let version_mismatch = RpcResponse::VersionMismatch {
+                        daemon_build_timestamp: self.build_timestamp,
+                    };
+                    let _ = envelope.response_tx.send(version_mismatch);
+                    continue;
+                }
+
                 // Single-task enforcement: reject if busy
                 {
                     let current_state = state.lock().await;
@@ -153,6 +164,18 @@ where
                         {
                             match message {
                                 SocketMessage::Request(request) => {
+                                    // Phase 4: Check build timestamp version compatibility
+                                    if request.client_build_timestamp != self.build_timestamp {
+                                        let version_mismatch: RpcResponse<M::Response> =
+                                            RpcResponse::VersionMismatch {
+                                                daemon_build_timestamp: self.build_timestamp,
+                                            };
+                                        let _ = connection
+                                            .send_message(&SocketMessage::<M>::Response(version_mismatch))
+                                            .await;
+                                        continue;
+                                    }
+
                                     // Single-task enforcement: reject if busy
                                     {
                                         let current_state = state.lock().await;

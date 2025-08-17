@@ -5,6 +5,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 pub mod client;
+pub mod connection;
 pub mod server;
 pub mod transport;
 
@@ -24,7 +25,7 @@ pub mod prelude {
 }
 
 // Core trait for RPC methods
-pub trait RpcMethod: Serialize + DeserializeOwned + Send + Sync {
+pub trait RpcMethod: Serialize + DeserializeOwned + Send + Sync + Clone {
     type Response: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug;
 }
 

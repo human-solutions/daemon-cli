@@ -5,7 +5,7 @@ use std::time::Duration;
 #[derive(Clone)]
 struct TestDaemon;
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 enum TestMethod {
     ProcessFile { path: PathBuf },
     GetStatus,
@@ -88,7 +88,7 @@ async fn main() -> Result<()> {
     
     // Parse command line arguments
     let mut daemon_id = None;
-    let mut daemon_mode = false;
+    let mut build_timestamp = None;
     
     let mut i = 1;
     while i < args.len() {
@@ -102,9 +102,14 @@ async fn main() -> Result<()> {
                     return Err(anyhow::anyhow!("--daemon-id requires a value"));
                 }
             }
-            "--daemon-mode" => {
-                daemon_mode = true;
-                i += 1;
+            "--build-timestamp" => {
+                if i + 1 < args.len() {
+                    build_timestamp = Some(args[i + 1].parse::<u64>()
+                        .map_err(|_| anyhow::anyhow!("Invalid build-timestamp"))?);
+                    i += 2;
+                } else {
+                    return Err(anyhow::anyhow!("--build-timestamp requires a value"));
+                }
             }
             _ => {
                 i += 1;
@@ -112,17 +117,14 @@ async fn main() -> Result<()> {
         }
     }
 
-    if !daemon_mode {
-        return Err(anyhow::anyhow!("This binary should only be run in daemon mode"));
-    }
-
     let daemon_id = daemon_id.ok_or_else(|| anyhow::anyhow!("--daemon-id is required"))?;
+    let build_timestamp = build_timestamp.unwrap_or(1234567890); // Default for testing
 
-    println!("Starting test daemon with ID: {}", daemon_id);
+    println!("Starting test daemon with ID: {} (build timestamp: {})", daemon_id, build_timestamp);
 
     // Create and start the daemon server
     let daemon = TestDaemon;
-    let server = DaemonServer::new(daemon_id, daemon);
+    let server = DaemonServer::new(daemon_id, build_timestamp, daemon);
     
     // Run the socket server (this will block until shutdown)
     server.spawn_with_socket().await?;
