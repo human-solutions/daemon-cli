@@ -18,60 +18,30 @@ pub struct DaemonClient<M: RpcMethod> {
 }
 
 impl<M: RpcMethod> DaemonClient<M> {
-    // Connect to existing daemon via socket
-    pub async fn connect_via_socket(
-        daemon_id: u64,
-        daemon_executable: PathBuf,
-        build_timestamp: u64,
-    ) -> Result<Self> {
-        let socket_client = SocketClient::connect(daemon_id).await?;
-        let (_status_tx, status_receiver) = broadcast::channel(32);
-
-        Ok(Self {
-            socket_client,
-            status_receiver,
-            daemon_id,
-            daemon_executable,
-            build_timestamp,
-            daemon_process: None, // Process management handled externally
-            _phantom: std::marker::PhantomData,
-        })
-    }
-
-    // Phase 3: Automatic daemon process spawning
+    /// Zero-configuration daemon connection - spawns daemon if needed
     pub async fn connect(
         daemon_id: u64,
         daemon_executable: PathBuf,
         build_timestamp: u64,
     ) -> Result<Self> {
-        // Step 1: Check if daemon is already running
+        // Try to connect to existing daemon first
         let socket_path = socket_path(daemon_id);
-
-        let (socket_client, daemon_process) = if socket_path.exists() {
-            // Try to connect to existing daemon
-            match SocketClient::connect(daemon_id).await {
-                Ok(_client) => {
-                    // Daemon is running but we don't manage it - we should still be able to restart if needed
-                    // For Phase 4, we always spawn our own daemon to have full control
-                    let _ = std::fs::remove_file(&socket_path);
-
-                    // Kill any existing daemon processes (best effort)
-                    Self::kill_existing_daemon_processes(daemon_id).await;
-
-                    // Spawn our own daemon
-                    Self::spawn_daemon_and_connect(daemon_id, &daemon_executable, build_timestamp)
-                        .await?
-                }
-                Err(_) => {
-                    // Socket exists but daemon is not responding - clean up and restart
-                    let _ = std::fs::remove_file(&socket_path);
-                    Self::spawn_daemon_and_connect(daemon_id, &daemon_executable, build_timestamp)
-                        .await?
-                }
-            }
+        
+        let (socket_client, daemon_process) = if let Ok(existing_client) = SocketClient::connect(daemon_id).await {
+            // Daemon is already running and responsive - use it
+            (existing_client, None) // We don't manage existing daemons
         } else {
-            // No socket file - daemon is not running, spawn it
-            Self::spawn_daemon_and_connect(daemon_id, &daemon_executable, build_timestamp).await?
+            // Daemon not running or not responsive - spawn our own
+            if socket_path.exists() {
+                // Clean up stale socket file
+                let _ = std::fs::remove_file(&socket_path);
+            }
+            
+            // Kill any zombie processes (best effort)
+            Self::cleanup_stale_processes(daemon_id).await;
+            
+            // Spawn new daemon
+            Self::spawn_and_wait_for_ready(daemon_id, &daemon_executable, build_timestamp).await?
         };
 
         let (_status_tx, status_receiver) = broadcast::channel(32);
@@ -87,7 +57,7 @@ impl<M: RpcMethod> DaemonClient<M> {
         })
     }
 
-    async fn spawn_daemon_and_connect(
+    async fn spawn_and_wait_for_ready(
         daemon_id: u64,
         daemon_executable: &PathBuf,
         build_timestamp: u64,
@@ -105,48 +75,31 @@ impl<M: RpcMethod> DaemonClient<M> {
             .spawn()
             .map_err(|e| anyhow::anyhow!("Failed to spawn daemon process: {}", e))?;
 
-        // Wait for daemon to start and socket to become available
+        // Wait for daemon to become ready
         let socket_path = socket_path(daemon_id);
         let mut attempts = 0;
-        const MAX_ATTEMPTS: u32 = 50; // 5 seconds total (50 * 100ms)
+        const MAX_ATTEMPTS: u32 = 50; // 5 seconds total
 
         loop {
             attempts += 1;
 
-            // Check if process is still alive
-            match child.try_wait() {
-                Ok(Some(exit_status)) => {
-                    return Err(anyhow::anyhow!(
-                        "Daemon process exited during startup with status: {}",
-                        exit_status
-                    ));
-                }
-                Ok(None) => {
-                    // Process is still running, continue
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!(
-                        "Failed to check daemon process status: {}",
-                        e
-                    ));
-                }
+            // Check if process crashed
+            if let Ok(Some(exit_status)) = child.try_wait() {
+                return Err(anyhow::anyhow!(
+                    "Daemon process exited during startup with status: {}",
+                    exit_status
+                ));
             }
 
-            // Try to connect to socket
+            // Try to connect
             if socket_path.exists() {
-                match SocketClient::connect(daemon_id).await {
-                    Ok(socket_client) => {
-                        // Successfully connected
-                        return Ok((socket_client, Some(child)));
-                    }
-                    Err(_) => {
-                        // Socket exists but not ready yet, continue waiting
-                    }
+                if let Ok(socket_client) = SocketClient::connect(daemon_id).await {
+                    // Successfully connected
+                    return Ok((socket_client, Some(child)));
                 }
             }
 
             if attempts >= MAX_ATTEMPTS {
-                // Kill the child process since it's not responding
                 let _ = child.kill().await;
                 return Err(anyhow::anyhow!("Daemon failed to start within timeout"));
             }
@@ -155,16 +108,14 @@ impl<M: RpcMethod> DaemonClient<M> {
         }
     }
 
-    async fn kill_existing_daemon_processes(daemon_id: u64) {
-        // Best effort to kill existing daemon processes
-        // This is a simplified implementation - in production you'd want more sophisticated process management
+    async fn cleanup_stale_processes(daemon_id: u64) {
+        // Best effort cleanup of stale daemon processes
         let _ = tokio::process::Command::new("pkill")
             .arg("-f")
             .arg(format!("cli.*daemon.*--daemon-id.*{daemon_id}"))
             .output()
             .await;
 
-        // Give time for processes to die
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
@@ -266,7 +217,7 @@ impl<M: RpcMethod> DaemonClient<M> {
         let _ = std::fs::remove_file(&socket_path);
 
         // Spawn new daemon process
-        let (socket_client, daemon_process) = Self::spawn_daemon_and_connect(
+        let (socket_client, daemon_process) = Self::spawn_and_wait_for_ready(
             self.daemon_id,
             &self.daemon_executable,
             self.build_timestamp,
@@ -307,6 +258,30 @@ impl<M: RpcMethod> DaemonClient<M> {
             let _ = std::fs::remove_file(&socket_path);
         }
         Ok(())
+    }
+
+    /// Backward compatibility: connect to existing daemon only
+    /// Note: This is rarely needed - prefer using connect() which handles everything automatically
+    pub async fn connect_via_socket(
+        daemon_id: u64,
+        daemon_executable: PathBuf,
+        build_timestamp: u64,
+    ) -> Result<Self> {
+        // Just try to connect without spawning
+        let socket_client = SocketClient::connect(daemon_id).await
+            .map_err(|e| anyhow::anyhow!("Failed to connect to existing daemon: {}", e))?;
+        
+        let (_status_tx, status_receiver) = broadcast::channel(32);
+
+        Ok(Self {
+            socket_client,
+            status_receiver,
+            daemon_id,
+            daemon_executable,
+            build_timestamp,
+            daemon_process: None, // We don't manage existing daemons
+            _phantom: std::marker::PhantomData,
+        })
     }
 }
 
