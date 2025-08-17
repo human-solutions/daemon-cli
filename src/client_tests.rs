@@ -1,6 +1,4 @@
-use crate::server::DaemonServer;
 use crate::*;
-use std::time::Duration;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 enum TestMethod {
@@ -11,134 +9,6 @@ enum TestMethod {
 
 impl RpcMethod for TestMethod {
     type Response = String;
-}
-
-#[tokio::test]
-async fn test_task_cancellation() {
-    // Create a daemon that will respect cancellation
-    #[derive(Clone)]
-    struct CancellableDaemon;
-
-    #[async_trait::async_trait]
-    impl RpcHandler<TestMethod> for CancellableDaemon {
-        async fn handle(
-            &mut self,
-            method: TestMethod,
-            cancel_token: tokio_util::sync::CancellationToken,
-            status_tx: tokio::sync::mpsc::Sender<DaemonStatus>,
-        ) -> anyhow::Result<String> {
-            match method {
-                TestMethod::LongRunningTask { duration_ms } => {
-                    status_tx
-                        .send(DaemonStatus::Busy("Starting cancellable task".to_string()))
-                        .await
-                        .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-
-                    // Simulate work in small chunks, checking for cancellation frequently
-                    let chunks = duration_ms / 10;
-                    for i in 0..chunks {
-                        // Check for cancellation every 10ms
-                        if cancel_token.is_cancelled() {
-                            status_tx
-                                .send(DaemonStatus::Ready)
-                                .await
-                                .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-                            return Err(anyhow::anyhow!("Task was cancelled after {}ms", i * 10));
-                        }
-
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-
-                        if i % 50 == 0 {
-                            let progress = (i * 100) / chunks;
-                            status_tx
-                                .send(DaemonStatus::Busy(format!(
-                                    "Cancellable task: {}% complete",
-                                    progress
-                                )))
-                                .await
-                                .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-                        }
-                    }
-
-                    status_tx
-                        .send(DaemonStatus::Ready)
-                        .await
-                        .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-
-                    Ok("Cancellable task completed".to_string())
-                }
-                _ => Ok("Other method".to_string()),
-            }
-        }
-    }
-
-    // Create server with cancellable daemon
-    let daemon = CancellableDaemon;
-    let server = DaemonServer::new(12345, 1234567890, daemon);
-    let server_handle = server.spawn().await.unwrap();
-
-    // Create two clients to test external cancellation via busy rejection
-    let mut client1 = super::DaemonClient::connect_to_server(
-        12345,
-        std::env::current_exe().unwrap(),
-        1234567890,
-        &server_handle,
-    );
-    let mut client2 = super::DaemonClient::connect_to_server(
-        12345,
-        std::env::current_exe().unwrap(),
-        1234567890,
-        &server_handle,
-    );
-
-    // Start a long-running task (2 seconds)
-    let start_time = std::time::Instant::now();
-    let client1_task = tokio::spawn(async move {
-        client1
-            .request(TestMethod::LongRunningTask { duration_ms: 2000 })
-            .await
-    });
-
-    // Give task time to start
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Try to cancel via client2 sending a request (should be rejected as busy)
-    let cancel_attempt = client2.request(TestMethod::GetStatus).await.unwrap();
-    match cancel_attempt {
-        RpcResponse::Error { error } => {
-            assert!(
-                error.contains("busy"),
-                "Expected busy error for cancellation test, got: {}",
-                error
-            );
-        }
-        _ => panic!("Expected busy error when daemon is processing long task"),
-    }
-
-    // Wait for the original task to complete naturally
-    let result = client1_task.await.unwrap().unwrap();
-    let elapsed = std::time::Instant::now().duration_since(start_time);
-
-    // Verify the task completed (since we didn't actually cancel it, just verified busy rejection)
-    match result {
-        RpcResponse::Success { output } => {
-            assert_eq!(output, "Cancellable task completed");
-            // Should take approximately 2 seconds
-            assert!(
-                elapsed >= Duration::from_millis(1900) && elapsed <= Duration::from_millis(2500)
-            );
-        }
-        _ => panic!("Expected success response, got: {:?}", result),
-    }
-
-    // Now test that the daemon is ready for new requests
-    let final_request = client2.request(TestMethod::GetStatus).await.unwrap();
-    match final_request {
-        RpcResponse::Success { output } => {
-            assert_eq!(output, "Other method");
-        }
-        _ => panic!("Expected success response after task completion"),
-    }
 }
 
 // Phase 3 Tests - Process Management
@@ -266,93 +136,39 @@ async fn cleanup_daemon(daemon_id: u64) {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 }
 
-#[derive(Clone)]
-struct TestDaemon;
-
-#[async_trait::async_trait]
-impl RpcHandler<TestMethod> for TestDaemon {
-    async fn handle(
-        &mut self,
-        method: TestMethod,
-        cancel_token: tokio_util::sync::CancellationToken,
-        status_tx: tokio::sync::mpsc::Sender<DaemonStatus>,
-    ) -> anyhow::Result<String> {
-        match method {
-            TestMethod::ProcessFile { path } => {
-                status_tx
-                    .send(DaemonStatus::Busy(format!("Processing file: {:?}", path)))
-                    .await
-                    .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-
-                tokio::time::sleep(Duration::from_millis(10)).await;
-
-                status_tx
-                    .send(DaemonStatus::Ready)
-                    .await
-                    .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-
-                Ok(format!("Processed file: {:?}", path))
-            }
-            TestMethod::GetStatus => Ok("Ready".to_string()),
-            TestMethod::LongRunningTask { duration_ms } => {
-                status_tx
-                    .send(DaemonStatus::Busy("Starting long-running task".to_string()))
-                    .await
-                    .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-
-                let chunks = duration_ms / 10;
-                for i in 0..chunks {
-                    if cancel_token.is_cancelled() {
-                        status_tx
-                            .send(DaemonStatus::Ready)
-                            .await
-                            .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-                        return Err(anyhow::anyhow!("Task cancelled"));
-                    }
-
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-
-                    if i % 10 == 0 {
-                        let progress = (i * 100) / chunks;
-                        status_tx
-                            .send(DaemonStatus::Busy(format!(
-                                "Long-running task: {}% complete",
-                                progress
-                            )))
-                            .await
-                            .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-                    }
-                }
-
-                status_tx
-                    .send(DaemonStatus::Ready)
-                    .await
-                    .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-
-                Ok("Long-running task completed".to_string())
-            }
-        }
-    }
-}
-
 // Phase 4 Tests - Version Management
 
 #[tokio::test]
 async fn test_version_mismatch_detection() {
-    use crate::server::DaemonServer;
+    let daemon_executable = get_test_daemon_path();
+    let daemon_id = 67890;
 
-    // Create daemon with different build timestamp
-    let daemon = TestDaemon;
-    let server = DaemonServer::new(67890, 1000, daemon); // Old timestamp
-    let server_handle = server.spawn().await.unwrap();
+    // Ensure no daemon is running
+    cleanup_daemon(daemon_id).await;
 
-    // Create client with newer build timestamp
-    let mut client = super::DaemonClient::connect_to_server(
-        67890,
-        std::env::current_exe().unwrap(),
+    // Spawn daemon with old build timestamp
+    let _old_daemon = tokio::process::Command::new(&daemon_executable)
+        .arg("--daemon-id")
+        .arg(daemon_id.to_string())
+        .arg("--build-timestamp")
+        .arg("1000") // Old timestamp
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    // Wait for daemon to start
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // Create client with newer build timestamp via socket
+    let mut client: super::DaemonClient<TestMethod> = super::DaemonClient::connect_via_socket(
+        daemon_id,
+        daemon_executable,
         2000, // Newer timestamp
-        &server_handle,
-    );
+    )
+    .await
+    .unwrap();
 
     // Request should return version mismatch
     let response = client.request(TestMethod::GetStatus).await.unwrap();
@@ -436,27 +252,26 @@ async fn test_task_cancellation_via_message() {
     cleanup_daemon(daemon_id).await;
 
     // Connect and spawn daemon
-    let mut client = super::DaemonClient::connect(
-        daemon_id,
-        daemon_executable,
-        1234567890,
-    ).await.unwrap();
+    let mut client = super::DaemonClient::connect(daemon_id, daemon_executable, 1234567890)
+        .await
+        .unwrap();
 
     // Start a long-running task
     let start_time = std::time::Instant::now();
     let client_task = tokio::spawn(async move {
-        client.request(TestMethod::LongRunningTask { duration_ms: 5000 }).await
+        client
+            .request(TestMethod::LongRunningTask { duration_ms: 5000 })
+            .await
     });
 
     // Wait a bit for task to start
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Create another client to send cancel message
-    let mut cancel_client: super::DaemonClient<TestMethod> = super::DaemonClient::connect_via_socket(
-        daemon_id,
-        get_test_daemon_path(),
-        1234567890,
-    ).await.unwrap();
+    let mut cancel_client: super::DaemonClient<TestMethod> =
+        super::DaemonClient::connect_via_socket(daemon_id, get_test_daemon_path(), 1234567890)
+            .await
+            .unwrap();
 
     // Cancel the running task
     let cancelled = cancel_client.cancel_current_task().await.unwrap();
@@ -467,13 +282,20 @@ async fn test_task_cancellation_via_message() {
     let elapsed = std::time::Instant::now().duration_since(start_time);
 
     // Task should complete quickly due to cancellation
-    assert!(elapsed < std::time::Duration::from_millis(2000), 
-        "Task should complete quickly due to cancellation, took: {:?}", elapsed);
+    assert!(
+        elapsed < std::time::Duration::from_millis(2000),
+        "Task should complete quickly due to cancellation, took: {:?}",
+        elapsed
+    );
 
     // The result should be an error due to cancellation
     match result.unwrap() {
         RpcResponse::Error { error } => {
-            assert!(error.contains("cancelled"), "Expected cancellation error, got: {}", error);
+            assert!(
+                error.contains("cancelled"),
+                "Expected cancellation error, got: {}",
+                error
+            );
         }
         RpcResponse::Success { .. } => {
             // Task completed before cancellation - this is also valid

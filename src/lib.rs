@@ -1,11 +1,10 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 pub mod client;
-pub mod connection;
 pub mod server;
 pub mod transport;
 
@@ -46,30 +45,11 @@ pub enum RpcResponse<R> {
 }
 
 // Daemon status enumeration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DaemonStatus {
     Ready,
     Busy(String),  // User message describing what the daemon is doing
     Error(String), // Error message describing why the daemon cannot run
-}
-
-// Internal request envelope for server communication
-pub(crate) struct RequestEnvelope<M: RpcMethod> {
-    pub request: RpcRequest<M>,
-    pub response_tx: oneshot::Sender<RpcResponse<M::Response>>,
-    pub cancel_token: CancellationToken,
-}
-
-// Server handle for in-memory communication
-pub struct ServerHandle<M: RpcMethod> {
-    pub(crate) request_tx: mpsc::Sender<RequestEnvelope<M>>,
-    pub(crate) status_tx: broadcast::Sender<DaemonStatus>,
-}
-
-impl<M: RpcMethod> ServerHandle<M> {
-    pub fn subscribe_status(&self) -> broadcast::Receiver<DaemonStatus> {
-        self.status_tx.subscribe()
-    }
 }
 
 // Handler trait for daemon implementations

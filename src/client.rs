@@ -1,4 +1,3 @@
-use crate::connection::Connection;
 use crate::transport::{SocketClient, SocketMessage, socket_path};
 use crate::*;
 use anyhow::Result;
@@ -9,40 +8,17 @@ use tokio::sync::broadcast;
 
 // Daemon client for communicating with daemon
 pub struct DaemonClient<M: RpcMethod> {
-    connection: Connection<M>,
+    socket_client: SocketClient,
     pub status_receiver: broadcast::Receiver<DaemonStatus>,
     pub daemon_id: u64,
     pub daemon_executable: PathBuf,
     pub build_timestamp: u64,
     daemon_process: Option<tokio::process::Child>,
+    _phantom: std::marker::PhantomData<M>,
 }
 
 impl<M: RpcMethod> DaemonClient<M> {
-    // For Phase 1: connect using a server handle (in-memory)
-    pub fn connect_to_server(
-        daemon_id: u64,
-        daemon_executable: PathBuf,
-        build_timestamp: u64,
-        server_handle: &ServerHandle<M>,
-    ) -> Self {
-        let connection = Connection::InMemory {
-            server_handle: ServerHandle {
-                request_tx: server_handle.request_tx.clone(),
-                status_tx: server_handle.status_tx.clone(),
-            },
-        };
-
-        Self {
-            connection,
-            status_receiver: server_handle.subscribe_status(),
-            daemon_id,
-            daemon_executable,
-            build_timestamp,
-            daemon_process: None, // No process for in-memory connections
-        }
-    }
-
-    // For Phase 2: connect using Unix socket
+    // Connect to existing daemon via socket
     pub async fn connect_via_socket(
         daemon_id: u64,
         daemon_executable: PathBuf,
@@ -51,15 +27,14 @@ impl<M: RpcMethod> DaemonClient<M> {
         let socket_client = SocketClient::connect(daemon_id).await?;
         let (_status_tx, status_receiver) = broadcast::channel(32);
 
-        let connection = Connection::Socket { socket_client };
-
         Ok(Self {
-            connection,
+            socket_client,
             status_receiver,
             daemon_id,
             daemon_executable,
             build_timestamp,
-            daemon_process: None, // Process management handled externally for Phase 2
+            daemon_process: None, // Process management handled externally
+            _phantom: std::marker::PhantomData,
         })
     }
 
@@ -100,15 +75,15 @@ impl<M: RpcMethod> DaemonClient<M> {
         };
 
         let (_status_tx, status_receiver) = broadcast::channel(32);
-        let connection = Connection::Socket { socket_client };
 
         Ok(Self {
-            connection,
+            socket_client,
             status_receiver,
             daemon_id,
             daemon_executable,
             build_timestamp,
             daemon_process,
+            _phantom: std::marker::PhantomData,
         })
     }
 
@@ -193,14 +168,29 @@ impl<M: RpcMethod> DaemonClient<M> {
     }
 
     pub async fn request(&mut self, method: M) -> Result<RpcResponse<M::Response>> {
-        let cancel_token = CancellationToken::new();
-
         let request = RpcRequest {
             method: method.clone(),
             client_build_timestamp: self.build_timestamp,
         };
 
-        let response = self.connection.send_request(request, cancel_token).await?;
+        // Send request over socket
+        self.socket_client
+            .send_message(&SocketMessage::Request(request))
+            .await?;
+
+        // Wait for response
+        let response = if let Some(message) = self
+            .socket_client
+            .receive_message::<SocketMessage<M>>()
+            .await?
+        {
+            match message {
+                SocketMessage::Response(response) => response,
+                _ => return Err(anyhow::anyhow!("Unexpected message type")),
+            }
+        } else {
+            return Err(anyhow::anyhow!("Socket connection closed"));
+        };
 
         // Phase 4: Handle version mismatch by restarting daemon
         if let RpcResponse::VersionMismatch {
@@ -217,16 +207,30 @@ impl<M: RpcMethod> DaemonClient<M> {
                 self.restart_daemon().await?;
 
                 // Retry the request with the new daemon
-                let retry_cancel_token = CancellationToken::new();
-
                 let retry_request = RpcRequest {
                     method: method.clone(),
                     client_build_timestamp: self.build_timestamp,
                 };
-                let retry_response = self
-                    .connection
-                    .send_request(retry_request, retry_cancel_token)
+
+                // Send retry request over socket
+                self.socket_client
+                    .send_message(&SocketMessage::Request(retry_request))
                     .await?;
+
+                // Wait for retry response
+                let retry_response = if let Some(message) = self
+                    .socket_client
+                    .receive_message::<SocketMessage<M>>()
+                    .await?
+                {
+                    match message {
+                        SocketMessage::Response(response) => response,
+                        _ => return Err(anyhow::anyhow!("Unexpected message type")),
+                    }
+                } else {
+                    return Err(anyhow::anyhow!("Socket connection closed"));
+                };
+
                 return Ok(retry_response);
             }
         }
@@ -236,28 +240,21 @@ impl<M: RpcMethod> DaemonClient<M> {
 
     /// Cancel the currently running task on the daemon
     pub async fn cancel_current_task(&mut self) -> Result<bool> {
-        match &mut self.connection {
-            Connection::Socket { socket_client } => {
-                // Send cancel message
-                socket_client.send_message(&SocketMessage::<M>::Cancel).await?;
-                
-                // Wait for acknowledgment (with timeout)
-                tokio::select! {
-                    msg = socket_client.receive_message::<SocketMessage<M>>() => {
-                        match msg? {
-                            Some(SocketMessage::CancelAck) => Ok(true),
-                            _ => Ok(false),
-                        }
-                    }
-                    _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                        Ok(false) // Timeout, assume failed
-                    }
+        // Send cancel message
+        self.socket_client
+            .send_message(&SocketMessage::<M>::Cancel)
+            .await?;
+
+        // Wait for acknowledgment (with timeout)
+        tokio::select! {
+            msg = self.socket_client.receive_message::<SocketMessage<M>>() => {
+                match msg? {
+                    Some(SocketMessage::CancelAck) => Ok(true),
+                    _ => Ok(false),
                 }
             }
-            Connection::InMemory { .. } => {
-                // In-memory connections don't support cancellation yet
-                // Could be implemented by adding cancel channel to ServerHandle
-                Ok(false)
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                Ok(false) // Timeout, assume failed
             }
         }
     }
@@ -325,8 +322,8 @@ impl<M: RpcMethod> DaemonClient<M> {
         )
         .await?;
 
-        // Update connection and process handle
-        self.connection = Connection::Socket { socket_client };
+        // Update socket client and process handle
+        self.socket_client = socket_client;
         self.daemon_process = daemon_process;
 
         Ok(())

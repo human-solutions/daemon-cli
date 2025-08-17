@@ -13,7 +13,10 @@ enum ServerState {
 
 // Task manager for cancellation
 struct TaskManager {
-    current_task: Option<(tokio::task::JoinHandle<()>, tokio_util::sync::CancellationToken)>,
+    current_task: Option<(
+        tokio::task::JoinHandle<()>,
+        tokio_util::sync::CancellationToken,
+    )>,
 }
 
 impl TaskManager {
@@ -21,8 +24,11 @@ impl TaskManager {
         Self { current_task: None }
     }
 
-
-    fn start_task(&mut self, handle: tokio::task::JoinHandle<()>, cancel_token: tokio_util::sync::CancellationToken) {
+    fn start_task(
+        &mut self,
+        handle: tokio::task::JoinHandle<()>,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) {
         self.current_task = Some((handle, cancel_token));
     }
 
@@ -34,7 +40,7 @@ impl TaskManager {
         if let Some((handle, cancel_token)) = self.current_task.take() {
             // Step 1: Signal graceful cancellation
             cancel_token.cancel();
-            
+
             // Step 2: Wait 1 second, then force-kill
             tokio::select! {
                 _result = handle => {
@@ -75,103 +81,7 @@ where
         }
     }
 
-    pub async fn spawn(self) -> Result<ServerHandle<M>> {
-        let (request_tx, mut request_rx) = mpsc::channel::<RequestEnvelope<M>>(32);
-        let (status_tx, _status_rx) = broadcast::channel(32);
-
-        let server_handle = ServerHandle {
-            request_tx,
-            status_tx: status_tx.clone(),
-        };
-
-        // Spawn the server task
-        tokio::spawn(async move {
-            let state = Arc::new(Mutex::new(ServerState::Ready));
-
-            // Send initial status
-            let _ = status_tx.send(DaemonStatus::Ready);
-
-            while let Some(envelope) = request_rx.recv().await {
-                // Phase 4: Check build timestamp version compatibility
-                if envelope.request.client_build_timestamp != self.build_timestamp {
-                    let version_mismatch = RpcResponse::VersionMismatch {
-                        daemon_build_timestamp: self.build_timestamp,
-                    };
-                    let _ = envelope.response_tx.send(version_mismatch);
-                    continue;
-                }
-
-                // Single-task enforcement: reject if busy
-                {
-                    let current_state = state.lock().await;
-                    if *current_state == ServerState::Busy {
-                        let _ = envelope.response_tx.send(RpcResponse::Error {
-                            error: "Daemon is busy processing another request".to_string(),
-                        });
-                        continue;
-                    }
-                }
-
-                // Change state to busy
-                {
-                    let mut current_state = state.lock().await;
-                    *current_state = ServerState::Busy;
-                }
-                let _ = status_tx.send(DaemonStatus::Busy("Processing request".to_string()));
-
-                // Create status channel for this request
-                let (task_status_tx, mut task_status_rx) = mpsc::channel(32);
-                let status_tx_clone = status_tx.clone();
-
-                // Forward status updates from handler to broadcast
-                let status_forwarder = tokio::spawn(async move {
-                    while let Some(status) = task_status_rx.recv().await {
-                        let _ = status_tx_clone.send(status);
-                    }
-                });
-
-                // Process the request in a separate task
-                let mut handler = self.handler.clone();
-                let state_clone = state.clone();
-                let status_tx_for_completion = status_tx.clone();
-
-                tokio::spawn(async move {
-                    // Process the request
-                    let result = handler
-                        .handle(
-                            envelope.request.method,
-                            envelope.cancel_token,
-                            task_status_tx,
-                        )
-                        .await;
-
-                    // Stop status forwarding
-                    status_forwarder.abort();
-
-                    // Send response
-                    let response = match result {
-                        Ok(output) => RpcResponse::Success { output },
-                        Err(err) => RpcResponse::Error {
-                            error: err.to_string(),
-                        },
-                    };
-
-                    let _ = envelope.response_tx.send(response);
-
-                    // Return to ready state
-                    {
-                        let mut current_state = state_clone.lock().await;
-                        *current_state = ServerState::Ready;
-                    }
-                    let _ = status_tx_for_completion.send(DaemonStatus::Ready);
-                });
-            }
-        });
-
-        Ok(server_handle)
-    }
-
-    /// Spawn server using Unix socket transport (Phase 2)
+    /// Spawn server using Unix socket transport
     pub async fn spawn_with_socket(self) -> Result<()> {
         let mut socket_server = SocketServer::new(self.daemon_id).await?;
         let state = Arc::new(Mutex::new(ServerState::Ready));
@@ -213,10 +123,12 @@ where
                                         let mut task_mgr = task_manager.lock().await;
                                         task_mgr.cancel_current_task().await
                                     };
-                                    
+
                                     // Send acknowledgment
-                                    let _ = connection.send_message(&SocketMessage::<M>::CancelAck).await;
-                                    
+                                    let _ = connection
+                                        .send_message(&SocketMessage::<M>::CancelAck)
+                                        .await;
+
                                     if cancelled {
                                         // Update state back to ready
                                         {
@@ -340,9 +252,6 @@ where
         Ok(())
     }
 
-    pub async fn run(&mut self) -> Result<()> {
-        todo!("Implement daemon server main loop - use spawn() instead for Phase 1")
-    }
 }
 
 #[cfg(test)]

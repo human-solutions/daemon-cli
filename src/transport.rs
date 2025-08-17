@@ -134,8 +134,3 @@ pub enum SocketMessage<M: RpcMethod> {
     CancelAck,
 }
 
-/// Non-generic status message for broadcasting
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
-pub enum StatusMessage {
-    Status(DaemonStatus),
-}
