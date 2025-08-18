@@ -1,8 +1,14 @@
+use anyhow::bail;
 use daemon_rpc::prelude::*;
-use std::path::PathBuf;
-use std::time::Duration;
+use serde::{Deserialize, Serialize};
+use std::{
+    env,
+    path::PathBuf,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+use tokio::time::sleep;
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum TestMethod {
     ProcessFile {
         path: PathBuf,
@@ -19,14 +25,14 @@ pub enum TestMethod {
     },
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ProcessOptions {
     pub compress: bool,
     pub validate: bool,
     pub backup: bool,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct TestResult {
     pub processed_bytes: u64,
     pub files_created: Vec<String>,
@@ -40,14 +46,14 @@ impl RpcMethod for TestMethod {
 
 #[derive(Clone)]
 pub struct DemoDaemon {
-    startup_time: std::time::Instant,
+    startup_time: Instant,
     rich_mode: bool, // true for file_processor mode, false for test mode
 }
 
 impl DemoDaemon {
     pub fn new(rich_mode: bool) -> Self {
         Self {
-            startup_time: std::time::Instant::now(),
+            startup_time: Instant::now(),
             rich_mode,
         }
     }
@@ -56,16 +62,16 @@ impl DemoDaemon {
         if self.rich_mode {
             // Rich mode: 2-second startup with progress messages
             println!("Initializing daemon subsystems...");
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            sleep(Duration::from_millis(500)).await;
 
             println!("Loading handlers...");
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            sleep(Duration::from_millis(500)).await;
 
             println!("Setting up engines...");
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            sleep(Duration::from_millis(500)).await;
 
             println!("Preparing systems...");
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            sleep(Duration::from_millis(500)).await;
 
             println!("Daemon ready!");
         }
@@ -83,7 +89,7 @@ impl RpcHandler<TestMethod> for DemoDaemon {
     ) -> Result<TestResult> {
         match method {
             TestMethod::ProcessFile { path, options } => {
-                let start_time = std::time::Instant::now();
+                let start_time = Instant::now();
 
                 status_tx
                     .send(DaemonStatus::Busy(format!(
@@ -98,15 +104,10 @@ impl RpcHandler<TestMethod> for DemoDaemon {
                 for i in 0..steps {
                     if cancel_token.is_cancelled() {
                         status_tx.send(DaemonStatus::Ready).await.ok();
-                        return Err(anyhow::anyhow!("File processing cancelled"));
+                        bail!("File processing cancelled");
                     }
 
-                    tokio::time::sleep(Duration::from_millis(if self.rich_mode {
-                        100
-                    } else {
-                        10
-                    }))
-                    .await;
+                    sleep(Duration::from_millis(if self.rich_mode { 100 } else { 10 })).await;
 
                     if i % (steps / 5) == 0 {
                         let progress = (i * 100) / steps;
@@ -171,7 +172,7 @@ impl RpcHandler<TestMethod> for DemoDaemon {
                 duration_seconds,
                 description,
             } => {
-                let start_time = std::time::Instant::now();
+                let start_time = Instant::now();
 
                 status_tx
                     .send(DaemonStatus::Busy(format!("Starting: {}", description)))
@@ -182,10 +183,10 @@ impl RpcHandler<TestMethod> for DemoDaemon {
                 for i in 0..total_steps {
                     if cancel_token.is_cancelled() {
                         status_tx.send(DaemonStatus::Ready).await.ok();
-                        return Err(anyhow::anyhow!("Long task '{}' was cancelled", description));
+                        bail!("Long task '{}' was cancelled", description);
                     }
 
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    sleep(Duration::from_millis(100)).await;
 
                     if i % 10 == 0 {
                         let progress = (i * 100) / total_steps;
@@ -215,7 +216,7 @@ impl RpcHandler<TestMethod> for DemoDaemon {
                     .await
                     .ok();
 
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                sleep(Duration::from_millis(100)).await;
 
                 status_tx.send(DaemonStatus::Ready).await.ok();
 
@@ -231,7 +232,7 @@ impl RpcHandler<TestMethod> for DemoDaemon {
 }
 
 pub fn get_daemon_path() -> PathBuf {
-    let mut exe_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut exe_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     exe_path.push("target");
     exe_path.push("debug");
     exe_path.push("examples");
@@ -245,14 +246,14 @@ pub fn get_daemon_path() -> PathBuf {
 }
 
 pub fn get_build_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs()
 }
 
 pub fn parse_daemon_args() -> Result<(u64, u64, bool)> {
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = env::args().collect();
     let mut daemon_id = None;
     let mut build_timestamp = None;
     let mut rich_mode = false;
@@ -269,7 +270,7 @@ pub fn parse_daemon_args() -> Result<(u64, u64, bool)> {
                     );
                     i += 2;
                 } else {
-                    return Err(anyhow::anyhow!("--daemon-id requires a value"));
+                    bail!("--daemon-id requires a value");
                 }
             }
             "--build-timestamp" => {
@@ -281,7 +282,7 @@ pub fn parse_daemon_args() -> Result<(u64, u64, bool)> {
                     );
                     i += 2;
                 } else {
-                    return Err(anyhow::anyhow!("--build-timestamp requires a value"));
+                    bail!("--build-timestamp requires a value");
                 }
             }
             "--rich" => {

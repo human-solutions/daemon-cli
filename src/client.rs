@@ -1,10 +1,8 @@
 use crate::transport::{SocketClient, SocketMessage, socket_path};
 use crate::*;
-use anyhow::Result;
-use std::path::PathBuf;
-use std::time::Duration;
-use tokio::process::Command;
-use tokio::sync::broadcast;
+use anyhow::{Context, Result, bail};
+use std::{fs, marker::PhantomData, path::PathBuf, process::Stdio, time::Duration};
+use tokio::{process::Command, select, sync::broadcast, time::sleep};
 
 /// Client for communicating with daemon processes via Unix sockets.
 ///
@@ -71,7 +69,7 @@ pub struct DaemonClient<M: RpcMethod> {
     pub daemon_executable: PathBuf,
     /// Build timestamp for version compatibility checking
     pub build_timestamp: u64,
-    _phantom: std::marker::PhantomData<M>,
+    _phantom: PhantomData<M>,
 }
 
 impl<M: RpcMethod> DaemonClient<M> {
@@ -144,7 +142,7 @@ impl<M: RpcMethod> DaemonClient<M> {
             // Daemon not running or not responsive - spawn our own
             if socket_path.exists() {
                 // Clean up stale socket file
-                let _ = std::fs::remove_file(&socket_path);
+                let _ = fs::remove_file(&socket_path);
             }
 
             // Kill any zombie processes (best effort)
@@ -162,7 +160,7 @@ impl<M: RpcMethod> DaemonClient<M> {
             daemon_id,
             daemon_executable,
             build_timestamp,
-            _phantom: std::marker::PhantomData,
+            _phantom: PhantomData,
         })
     }
 
@@ -181,14 +179,14 @@ impl<M: RpcMethod> DaemonClient<M> {
                 Err(e) if e.to_string().contains("signal: 15") && retry_attempt < 2 => {
                     // Daemon was killed during startup, likely by concurrent test cleanup
                     // Wait a bit and retry
-                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    sleep(Duration::from_millis(300)).await;
                     continue;
                 }
                 Err(e) => return Err(e),
             }
         }
 
-        Err(anyhow::anyhow!("Failed to spawn daemon after retries"))
+        bail!("Failed to spawn daemon after retries")
     }
 
     async fn try_spawn_daemon(
@@ -203,9 +201,9 @@ impl<M: RpcMethod> DaemonClient<M> {
             .arg(daemon_id.to_string())
             .arg("--build-timestamp")
             .arg(build_timestamp.to_string())
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| anyhow::anyhow!("Failed to spawn daemon process: {}", e))?;
 
@@ -219,10 +217,10 @@ impl<M: RpcMethod> DaemonClient<M> {
 
             // Check if process crashed during startup
             if let Ok(Some(exit_status)) = child.try_wait() {
-                return Err(anyhow::anyhow!(
+                bail!(
                     "Daemon process exited during startup with status: {}",
                     exit_status
-                ));
+                );
             }
 
             // Try to connect
@@ -236,10 +234,10 @@ impl<M: RpcMethod> DaemonClient<M> {
             if attempts >= MAX_ATTEMPTS {
                 // Kill the startup process if it's still running
                 let _ = child.kill().await;
-                return Err(anyhow::anyhow!("Daemon failed to start within timeout"));
+                bail!("Daemon failed to start within timeout");
             }
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -247,18 +245,15 @@ impl<M: RpcMethod> DaemonClient<M> {
         // Best effort cleanup using PID file
         let pid_file = crate::transport::pid_path(daemon_id);
         if pid_file.exists()
-            && let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid_str) = fs::read_to_string(&pid_file)
             && let Ok(pid) = pid_str.trim().parse::<u32>()
         {
-            let _ = tokio::process::Command::new("kill")
-                .arg(pid.to_string())
-                .output()
-                .await;
+            let _ = Command::new("kill").arg(pid.to_string()).output().await;
         }
         // Remove stale PID file
-        let _ = std::fs::remove_file(&pid_file);
+        let _ = fs::remove_file(&pid_file);
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(100)).await;
     }
 
     /// Send an RPC request to the daemon and wait for response.
@@ -311,7 +306,7 @@ impl<M: RpcMethod> DaemonClient<M> {
                                 response = Some(resp);
                                 break;
                             }
-                            _ => return Err(anyhow::anyhow!("Unexpected message type")),
+                            _ => bail!("Unexpected message type"),
                         },
                         Ok(None) => {
                             last_error = Some("Socket connection closed".to_string());
@@ -329,9 +324,9 @@ impl<M: RpcMethod> DaemonClient<M> {
             // If we get here, something failed
             if attempt == 0 {
                 // First failure, try to reconnect
-                if let Err(e) = self.ensure_connection().await {
-                    return Err(anyhow::anyhow!("Failed to reconnect: {}", e));
-                }
+                self.ensure_connection()
+                    .await
+                    .context("Failed to reconnect")?;
             }
             // For second failure, we'll exit the loop and return an error
         }
@@ -375,10 +370,10 @@ impl<M: RpcMethod> DaemonClient<M> {
             {
                 match message {
                     SocketMessage::Response(response) => response,
-                    _ => return Err(anyhow::anyhow!("Unexpected message type")),
+                    _ => bail!("Unexpected message type"),
                 }
             } else {
-                return Err(anyhow::anyhow!("Socket connection closed"));
+                bail!("Socket connection closed");
             };
 
             return Ok(retry_response);
@@ -413,14 +408,14 @@ impl<M: RpcMethod> DaemonClient<M> {
             .await?;
 
         // Wait for acknowledgment (with timeout)
-        tokio::select! {
+        select! {
             msg = self.socket_client.receive_message::<SocketMessage<M>>() => {
                 match msg? {
                     Some(SocketMessage::CancelAck) => Ok(true),
                     _ => Ok(false),
                 }
             }
-            _ = tokio::time::sleep(Duration::from_millis(500)) => {
+            _ = sleep(Duration::from_millis(500)) => {
                 Ok(false) // Timeout, assume failed
             }
         }
@@ -429,13 +424,13 @@ impl<M: RpcMethod> DaemonClient<M> {
     async fn restart_daemon(&mut self) -> Result<()> {
         // Clean up old socket file to signal daemon should exit
         let socket_path = socket_path(self.daemon_id);
-        let _ = std::fs::remove_file(&socket_path);
+        let _ = fs::remove_file(&socket_path);
 
         // Kill any zombie processes (best effort)
         Self::cleanup_stale_processes(self.daemon_id).await;
 
         // Give the old daemon time to exit gracefully
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(100)).await;
 
         // Spawn new daemon process
         let socket_client = Self::spawn_and_wait_for_ready(

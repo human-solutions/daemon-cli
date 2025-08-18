@@ -1,12 +1,15 @@
 use crate::*;
-use std::{path::PathBuf, time::Duration};
+use anyhow::bail;
+use serde::{Deserialize, Serialize};
+use std::{env, path::PathBuf, time::Duration};
+use tokio::{spawn, time::sleep};
 
 #[derive(Clone)]
 struct TestDaemon;
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 enum TestMethod {
-    ProcessFile { path: std::path::PathBuf },
+    ProcessFile { path: PathBuf },
     GetStatus,
     LongRunningTask { duration_ms: u64 },
 }
@@ -30,7 +33,7 @@ impl RpcHandler<TestMethod> for TestDaemon {
                     .await
                     .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
 
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                sleep(Duration::from_millis(10)).await;
 
                 status_tx
                     .send(DaemonStatus::Ready)
@@ -53,10 +56,10 @@ impl RpcHandler<TestMethod> for TestDaemon {
                             .send(DaemonStatus::Ready)
                             .await
                             .map_err(|_| anyhow::anyhow!("Failed to send status"))?;
-                        return Err(anyhow::anyhow!("Task cancelled"));
+                        bail!("Task cancelled");
                     }
 
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    sleep(Duration::from_millis(10)).await;
 
                     if i % 10 == 0 {
                         let progress = (i * 100) / chunks;
@@ -82,7 +85,7 @@ impl RpcHandler<TestMethod> for TestDaemon {
 }
 
 fn exe_path() -> PathBuf {
-    std::env::current_exe().unwrap()
+    env::current_exe().unwrap()
 }
 
 #[tokio::test]
@@ -92,10 +95,10 @@ async fn test_socket_single_task_enforcement() {
     let server = super::DaemonServer::new(23456, 1234567890, daemon);
 
     // Start server in background task
-    let _server_task = tokio::spawn(async move { server.spawn_with_socket().await });
+    let _server_task = spawn(async move { server.spawn_with_socket().await });
 
     // Give server time to start
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(100)).await;
 
     // Create two socket clients
     let mut client1 = DaemonClient::connect(23456, exe_path(), 1234567890)
@@ -107,14 +110,14 @@ async fn test_socket_single_task_enforcement() {
         .unwrap();
 
     // Start a long-running task on client1
-    let client1_task = tokio::spawn(async move {
+    let client1_task = spawn(async move {
         client1
             .request(TestMethod::LongRunningTask { duration_ms: 500 })
             .await
     });
 
     // Give client1 time to start
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    sleep(Duration::from_millis(50)).await;
 
     // Try to send request from client2 - should fail with busy
     let response2 = client2.request(TestMethod::GetStatus).await.unwrap();
@@ -155,10 +158,10 @@ async fn test_socket_message_framing() {
     let server = super::DaemonServer::new(34567, 1234567890, daemon);
 
     // Start server in background task
-    let _server_task = tokio::spawn(async move { server.spawn_with_socket().await });
+    let _server_task = spawn(async move { server.spawn_with_socket().await });
 
     // Give server time to start
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(100)).await;
 
     // Create socket client
     let mut client = crate::client::DaemonClient::connect(34567, exe_path(), 1234567890)

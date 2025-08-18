@@ -1,8 +1,13 @@
 use crate::transport::{SocketMessage, SocketServer};
 use crate::*;
 use anyhow::Result;
-use std::sync::Arc;
-use tokio::sync::{Mutex, broadcast, mpsc};
+use std::{fs, marker::PhantomData, process, sync::Arc, time::Duration};
+use tokio::{
+    select, spawn,
+    sync::{Mutex, broadcast, mpsc},
+    task::JoinHandle,
+    time::sleep,
+};
 
 // Server state
 #[derive(Debug, Clone, PartialEq)]
@@ -13,10 +18,7 @@ enum ServerState {
 
 // Task manager for cancellation
 struct TaskManager {
-    current_task: Option<(
-        tokio::task::JoinHandle<()>,
-        tokio_util::sync::CancellationToken,
-    )>,
+    current_task: Option<(JoinHandle<()>, tokio_util::sync::CancellationToken)>,
 }
 
 impl TaskManager {
@@ -26,7 +28,7 @@ impl TaskManager {
 
     fn start_task(
         &mut self,
-        handle: tokio::task::JoinHandle<()>,
+        handle: JoinHandle<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
         self.current_task = Some((handle, cancel_token));
@@ -42,12 +44,12 @@ impl TaskManager {
             cancel_token.cancel();
 
             // Step 2: Wait 1 second, then force-kill
-            tokio::select! {
+            select! {
                 _result = handle => {
                     // Task completed gracefully
                     true
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                _ = sleep(Duration::from_secs(1)) => {
                     // Force abort the task after timeout
                     // Note: handle was consumed by the select, but abort was already called implicitly
                     true
@@ -107,7 +109,7 @@ pub struct DaemonServer<H, M: RpcMethod> {
     /// Build timestamp for version compatibility checking
     pub build_timestamp: u64,
     handler: H,
-    _phantom: std::marker::PhantomData<M>,
+    _phantom: PhantomData<M>,
 }
 
 impl<H, M> DaemonServer<H, M>
@@ -128,7 +130,7 @@ where
             daemon_id,
             build_timestamp,
             handler,
-            _phantom: std::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 
@@ -157,16 +159,16 @@ where
         let (status_tx, _status_rx) = broadcast::channel::<DaemonStatus>(32);
 
         // Write PID file for precise process management
-        let pid = std::process::id();
+        let pid = process::id();
         let pid_file = crate::transport::pid_path(self.daemon_id);
-        if let Err(e) = std::fs::write(&pid_file, pid.to_string()) {
+        if let Err(e) = fs::write(&pid_file, pid.to_string()) {
             eprintln!("Warning: Failed to write PID file: {}", e);
         }
 
         // Ensure PID file cleanup on exit
         let cleanup_pid_file = pid_file.clone();
         let _cleanup_guard = scopeguard::guard((), move |_| {
-            let _ = std::fs::remove_file(&cleanup_pid_file);
+            let _ = fs::remove_file(&cleanup_pid_file);
         });
 
         // Send initial status
@@ -192,7 +194,7 @@ where
                     let mut handler = self.handler.clone();
 
                     // Handle this client connection
-                    tokio::spawn(async move {
+                    spawn(async move {
                         // Handle incoming messages from client
                         while let Ok(Some(message)) =
                             connection.receive_message::<SocketMessage<M>>().await
@@ -266,7 +268,7 @@ where
                                     let status_tx_clone = status_tx.clone();
 
                                     // Forward task status updates to broadcast
-                                    let task_status_forwarder = tokio::spawn(async move {
+                                    let task_status_forwarder = spawn(async move {
                                         while let Some(status) = task_status_rx.recv().await {
                                             let _ = status_tx_clone.send(status);
                                         }
@@ -279,7 +281,7 @@ where
                                     {
                                         let mut task_mgr = task_manager.lock().await;
                                         // For now, just store a dummy handle since we can't easily track the synchronous execution
-                                        let dummy_handle = tokio::spawn(async {});
+                                        let dummy_handle = spawn(async {});
                                         task_mgr.start_task(dummy_handle, cancel_token.clone());
                                     }
 

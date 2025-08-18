@@ -1,12 +1,18 @@
 mod common;
 
+use anyhow::bail;
 use common::*;
 use daemon_rpc::prelude::*;
-use std::time::Duration;
+use std::{
+    env,
+    process::Command,
+    time::{Duration, Instant},
+};
+use tokio::{select, spawn, time::sleep};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
         print_usage();
@@ -20,7 +26,7 @@ async fn main() -> Result<()> {
         _ => {
             eprintln!("❌ Unknown mode: {}", args[1]);
             print_usage();
-            Err(anyhow::anyhow!("Invalid mode"))
+            bail!("Invalid mode")
         }
     }
 }
@@ -66,7 +72,7 @@ async fn run_daemon_mode() -> Result<()> {
 async fn run_demo_mode() -> Result<()> {
     // Build daemon first
     println!("🔨 Building daemon...");
-    let _ = std::process::Command::new("cargo")
+    let _ = Command::new("cargo")
         .args(["build", "--example", "cli"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output();
@@ -78,7 +84,7 @@ async fn run_demo_mode() -> Result<()> {
     // Demo 1: Auto-spawn with startup delay
     println!("📋 Demo 1: Auto-Spawn with Startup Delay");
     println!("-----------------------------------------");
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
 
     let mut client: DaemonClient<TestMethod> =
         DaemonClient::connect(2000, get_daemon_path(), get_build_timestamp()).await?;
@@ -91,7 +97,7 @@ async fn run_demo_mode() -> Result<()> {
     // Demo 2: Status streaming
     println!("\n📊 Demo 2: Real-time Status Streaming");
     println!("-------------------------------------");
-    tokio::spawn(async move {
+    spawn(async move {
         while let Ok(status) = client.status_receiver.recv().await {
             match status {
                 DaemonStatus::Ready => println!("📊 Status: ✅ Ready"),
@@ -159,12 +165,12 @@ async fn demonstrate_cancellation() -> Result<()> {
     });
 
     let cancel_future = async {
-        tokio::time::sleep(Duration::from_millis(2000)).await;
+        sleep(Duration::from_millis(2000)).await;
         println!("🛑 Sending cancel...");
         cancel_client.cancel_current_task().await
     };
 
-    tokio::select! {
+    select! {
         result = task_future => {
             match result? {
                 RpcResponse::Success { output } => println!("✅ Task completed: {}", output.status),
@@ -177,7 +183,7 @@ async fn demonstrate_cancellation() -> Result<()> {
                 true => println!("✅ Cancel sent successfully"),
                 false => println!("⚠️  Cancel failed"),
             }
-            tokio::time::sleep(Duration::from_millis(500)).await; // Wait for task to respond
+            sleep(Duration::from_millis(500)).await; // Wait for task to respond
         }
     }
 
@@ -215,7 +221,7 @@ async fn run_test_mode() -> Result<()> {
     println!("============================");
 
     // Build daemon
-    let _ = std::process::Command::new("cargo")
+    let _ = Command::new("cargo")
         .args(["build", "--example", "cli"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output();
@@ -232,7 +238,7 @@ async fn run_test_mode() -> Result<()> {
         }
         _ => {
             println!("❌ Status check failed");
-            return Err(anyhow::anyhow!("Status check failed"));
+            bail!("Status check failed");
         }
     }
 
@@ -252,7 +258,7 @@ async fn run_test_mode() -> Result<()> {
         }
         _ => {
             println!("❌ Quick task failed");
-            return Err(anyhow::anyhow!("Quick task failed"));
+            bail!("Quick task failed");
         }
     }
 
@@ -266,7 +272,7 @@ async fn run_test_mode() -> Result<()> {
         description: "Test task".to_string(),
     });
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    sleep(Duration::from_millis(500)).await;
 
     let cancelled = cancel_client.cancel_current_task().await?;
     if cancelled {

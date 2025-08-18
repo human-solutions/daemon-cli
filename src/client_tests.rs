@@ -1,8 +1,15 @@
 use crate::*;
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use std::{
+    fs,
+    path::PathBuf,
+    process::{Command, Stdio},
+    time::Duration,
+};
+use tokio::{process::Command as TokioCommand, time::sleep};
 
 // Use the same types as the all_in_one example for consistency
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum TestMethod {
     ProcessFile {
         path: PathBuf,
@@ -19,14 +26,14 @@ pub enum TestMethod {
     },
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ProcessOptions {
     pub compress: bool,
     pub validate: bool,
     pub backup: bool,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct TestResult {
     pub processed_bytes: u64,
     pub files_created: Vec<String>,
@@ -112,17 +119,17 @@ async fn test_daemon_crash_recovery() {
     // Simulate daemon crash by killing the specific daemon process
     let pid_file = crate::transport::pid_path(daemon_id);
     if pid_file.exists()
-        && let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+        && let Ok(pid_str) = fs::read_to_string(&pid_file)
         && let Ok(pid) = pid_str.trim().parse::<u32>()
     {
-        let _ = tokio::process::Command::new("kill")
+        let _ = TokioCommand::new("kill")
             .arg(pid.to_string())
             .output()
             .await;
     }
 
     // Give some time for the process to die and socket cleanup
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(100)).await;
 
     // Create a new client - this will detect the crashed daemon and restart it
     let mut new_client = super::DaemonClient::connect(
@@ -154,15 +161,15 @@ async fn test_daemon_crash_recovery() {
 
 // Helper functions for tests
 
-fn get_test_daemon_path() -> std::path::PathBuf {
+fn get_test_daemon_path() -> PathBuf {
     // First try to build the example to ensure it exists
-    let _ = std::process::Command::new("cargo")
+    let _ = Command::new("cargo")
         .args(["build", "--example", "cli"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output();
 
     // Get the path to the cli example binary
-    let mut exe_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut exe_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     exe_path.push("target");
     exe_path.push("debug");
     exe_path.push("examples");
@@ -182,28 +189,28 @@ async fn cleanup_daemon(daemon_id: u64) {
     // Kill daemon using precise PID if available
     let pid_file = pid_path(daemon_id);
     if pid_file.exists()
-        && let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+        && let Ok(pid_str) = fs::read_to_string(&pid_file)
         && let Ok(pid) = pid_str.trim().parse::<u32>()
     {
-        let _ = tokio::process::Command::new("kill")
+        let _ = TokioCommand::new("kill")
             .arg(pid.to_string())
             .output()
             .await;
     }
     // Remove PID file
-    let _ = std::fs::remove_file(&pid_file);
+    let _ = fs::remove_file(&pid_file);
 
     // Wait for process termination
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(100)).await;
 
     // Remove socket file if it exists
     let socket_path = socket_path(daemon_id);
     if socket_path.exists() {
-        let _ = std::fs::remove_file(&socket_path);
+        let _ = fs::remove_file(&socket_path);
     }
 
     // Brief cleanup delay
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    sleep(Duration::from_millis(50)).await;
 }
 
 #[tokio::test]
@@ -215,20 +222,20 @@ async fn test_version_mismatch_detection() {
     cleanup_daemon(daemon_id).await;
 
     // Spawn daemon with old build timestamp
-    let _old_daemon = tokio::process::Command::new(&daemon_executable)
+    let _old_daemon = TokioCommand::new(&daemon_executable)
         .arg("daemon")
         .arg("--daemon-id")
         .arg(daemon_id.to_string())
         .arg("--build-timestamp")
         .arg("1000") // Old timestamp
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .unwrap();
 
     // Wait for daemon to start
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    sleep(Duration::from_millis(200)).await;
 
     // Create client with newer build timestamp via socket
     let mut client: super::DaemonClient<TestMethod> = super::DaemonClient::connect(

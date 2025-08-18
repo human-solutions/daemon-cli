@@ -2,30 +2,31 @@ use crate::*;
 use anyhow::Result;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::{env, fs, path::PathBuf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 /// Generate socket path for a daemon ID
 pub fn socket_path(daemon_id: u64) -> PathBuf {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     temp_dir.join(format!("daemon-rpc-{daemon_id}.sock"))
 }
 
 /// Generate PID file path for a daemon ID
 pub fn pid_path(daemon_id: u64) -> PathBuf {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     temp_dir.join(format!("daemon-rpc-{daemon_id}.pid"))
 }
 
 /// Serialize a message to bytes
-pub fn serialize_message<T: serde::Serialize>(message: &T) -> Result<Bytes> {
+pub fn serialize_message<T: Serialize>(message: &T) -> Result<Bytes> {
     let json = serde_json::to_vec(message)?;
     Ok(Bytes::from(json))
 }
 
 /// Deserialize bytes to a message
-pub fn deserialize_message<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+pub fn deserialize_message<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     let message = serde_json::from_slice(bytes)?;
     Ok(message)
 }
@@ -42,7 +43,7 @@ impl SocketServer {
 
         // Remove existing socket file if it exists
         if socket_path.exists() {
-            std::fs::remove_file(&socket_path)?;
+            fs::remove_file(&socket_path)?;
         }
 
         let listener = UnixListener::bind(&socket_path)?;
@@ -51,8 +52,8 @@ impl SocketServer {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(&socket_path, perms)?;
+            let perms = fs::Permissions::from_mode(0o600);
+            fs::set_permissions(&socket_path, perms)?;
         }
 
         Ok(Self {
@@ -74,7 +75,7 @@ impl SocketServer {
 impl Drop for SocketServer {
     fn drop(&mut self) {
         // Clean up socket file
-        let _ = std::fs::remove_file(&self.socket_path);
+        let _ = fs::remove_file(&self.socket_path);
     }
 }
 
@@ -92,11 +93,11 @@ impl SocketClient {
         })
     }
 
-    pub async fn send_message<T: serde::Serialize>(&mut self, message: &T) -> Result<()> {
+    pub async fn send_message<T: Serialize>(&mut self, message: &T) -> Result<()> {
         self.connection.send_message(message).await
     }
 
-    pub async fn receive_message<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>> {
+    pub async fn receive_message<T: DeserializeOwned>(&mut self) -> Result<Option<T>> {
         self.connection.receive_message().await
     }
 }
@@ -113,13 +114,13 @@ impl SocketConnection {
         Self { framed }
     }
 
-    pub async fn send_message<T: serde::Serialize>(&mut self, message: &T) -> Result<()> {
+    pub async fn send_message<T: Serialize>(&mut self, message: &T) -> Result<()> {
         let bytes = serialize_message(message)?;
         self.framed.send(bytes).await?;
         Ok(())
     }
 
-    pub async fn receive_message<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>> {
+    pub async fn receive_message<T: DeserializeOwned>(&mut self) -> Result<Option<T>> {
         if let Some(bytes) = self.framed.next().await {
             let bytes = bytes?;
             let message = deserialize_message(&bytes[..])?;
@@ -131,7 +132,7 @@ impl SocketConnection {
 }
 
 /// Message types for socket communication
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(bound = "M: RpcMethod + Serialize + DeserializeOwned")]
 pub enum SocketMessage<M: RpcMethod> {
     Request(RpcRequest<M>),
