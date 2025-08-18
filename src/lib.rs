@@ -6,7 +6,7 @@
 //!
 //! daemon-rpc provides a simple way to build applications that communicate
 //! with background daemon processes. The framework handles all the complexity
-//! of process management, IPC, and error handling automatically.
+//! of daemon spawning, IPC, and error handling automatically.
 //!
 //! ## Key Features
 //!
@@ -16,7 +16,7 @@
 //! - **Status Streaming**: Real-time progress updates
 //! - **Task Cancellation**: Graceful + forceful task termination
 //! - **Version Management**: Automatic daemon restart on version mismatch
-//! - **Process Management**: Health monitoring, crash recovery, clean shutdown
+//! - **Socket-Based Coordination**: Daemons manage their own lifecycle via socket monitoring
 //!
 //! ## Quick Start
 //!

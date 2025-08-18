@@ -38,8 +38,6 @@ impl RpcMethod for TestMethod {
     type Response = TestResult;
 }
 
-// Phase 3 Tests - Process Management
-
 #[tokio::test]
 async fn test_daemon_auto_spawn() {
     // Get path to the test daemon binary
@@ -91,8 +89,7 @@ async fn test_daemon_auto_spawn() {
         _ => panic!("Expected success response, got: {:?}", response),
     }
 
-    // Clean up
-    let _ = client.shutdown().await;
+    // Connection will be cleaned up automatically when client is dropped
 }
 
 #[tokio::test]
@@ -112,12 +109,19 @@ async fn test_daemon_crash_recovery() {
     let response = client.request(TestMethod::GetStatus).await.unwrap();
     assert!(matches!(response, RpcResponse::Success { .. }));
 
-    // Simulate daemon crash by killing the process
-    if let Some(child) = &mut client.daemon_process {
-        let _ = child.kill().await;
+    // Simulate daemon crash by killing the specific daemon process
+    let pid_file = crate::transport::pid_path(daemon_id);
+    if pid_file.exists()
+        && let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+        && let Ok(pid) = pid_str.trim().parse::<u32>()
+    {
+        let _ = tokio::process::Command::new("kill")
+            .arg(pid.to_string())
+            .output()
+            .await;
     }
 
-    // Give some time for the process to die
+    // Give some time for the process to die and socket cleanup
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Create a new client - this will detect the crashed daemon and restart it
@@ -145,8 +149,7 @@ async fn test_daemon_crash_recovery() {
         ),
     }
 
-    // Clean up
-    let _ = new_client.shutdown().await;
+    // Connection will be cleaned up automatically when client is dropped
 }
 
 // Helper functions for tests
@@ -174,7 +177,24 @@ fn get_test_daemon_path() -> std::path::PathBuf {
 }
 
 async fn cleanup_daemon(daemon_id: u64) {
-    use crate::transport::socket_path;
+    use crate::transport::{pid_path, socket_path};
+
+    // Kill daemon using precise PID if available
+    let pid_file = pid_path(daemon_id);
+    if pid_file.exists()
+        && let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+        && let Ok(pid) = pid_str.trim().parse::<u32>()
+    {
+        let _ = tokio::process::Command::new("kill")
+            .arg(pid.to_string())
+            .output()
+            .await;
+    }
+    // Remove PID file
+    let _ = std::fs::remove_file(&pid_file);
+
+    // Wait for process termination
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Remove socket file if it exists
     let socket_path = socket_path(daemon_id);
@@ -182,11 +202,9 @@ async fn cleanup_daemon(daemon_id: u64) {
         let _ = std::fs::remove_file(&socket_path);
     }
 
-    // Give time for cleanup
+    // Brief cleanup delay
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 }
-
-// Phase 4 Tests - Version Management
 
 #[tokio::test]
 async fn test_version_mismatch_detection() {
@@ -221,14 +239,16 @@ async fn test_version_mismatch_detection() {
     .await
     .unwrap();
 
-    // Request should return version mismatch
+    // Request should detect version mismatch, restart daemon, and succeed
+    // The version mismatch detection message is printed to stdout during restart
     let response = client.request(TestMethod::GetStatus).await.unwrap();
     match response {
-        RpcResponse::VersionMismatch {
-            daemon_build_timestamp,
-        } => {
-            assert_eq!(daemon_build_timestamp, 1000);
+        RpcResponse::Success { .. } => {
+            // Success indicates the daemon was restarted and request succeeded
         }
-        _ => panic!("Expected version mismatch response, got: {:?}", response),
+        _ => panic!(
+            "Expected success after automatic daemon restart, got: {:?}",
+            response
+        ),
     }
 }

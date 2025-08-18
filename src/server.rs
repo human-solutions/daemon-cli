@@ -156,6 +156,19 @@ where
         let task_manager = Arc::new(Mutex::new(TaskManager::new()));
         let (status_tx, _status_rx) = broadcast::channel::<DaemonStatus>(32);
 
+        // Write PID file for precise process management
+        let pid = std::process::id();
+        let pid_file = crate::transport::pid_path(self.daemon_id);
+        if let Err(e) = std::fs::write(&pid_file, pid.to_string()) {
+            eprintln!("Warning: Failed to write PID file: {}", e);
+        }
+
+        // Ensure PID file cleanup on exit
+        let cleanup_pid_file = pid_file.clone();
+        let _cleanup_guard = scopeguard::guard((), move |_| {
+            let _ = std::fs::remove_file(&cleanup_pid_file);
+        });
+
         // Send initial status
         let _ = status_tx.send(DaemonStatus::Ready);
 
@@ -207,7 +220,7 @@ where
                                     }
                                 }
                                 SocketMessage::Request(request) => {
-                                    // Phase 4: Check build timestamp version compatibility
+                                    // Check build timestamp version compatibility
                                     if request.client_build_timestamp != self.build_timestamp {
                                         let version_mismatch: RpcResponse<M::Response> =
                                             RpcResponse::VersionMismatch {
