@@ -1,11 +1,42 @@
 use anyhow::Result;
 use daemon_rpc::prelude::*;
+use rand::Rng;
 use std::{path::PathBuf, time::Duration};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     spawn,
+    task::JoinHandle,
     time::sleep,
 };
+
+// Helper to generate a random daemon ID for test isolation
+fn generate_test_daemon_id() -> u64 {
+    rand::thread_rng().gen_range(10000..99999)
+}
+
+// Helper to start a daemon server with cleanup
+async fn start_test_daemon<H: CommandHandler + Clone + 'static>(
+    daemon_id: u64,
+    build_timestamp: u64,
+    handler: H,
+) -> (DaemonHandle, JoinHandle<()>) {
+    let (server, shutdown_handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
+    let join_handle = spawn(async move {
+        server.run().await.ok();
+    });
+
+    // Wait for server to start
+    sleep(Duration::from_millis(100)).await;
+
+    (shutdown_handle, join_handle)
+}
+
+// Helper to cleanup daemon server
+async fn stop_test_daemon(shutdown_handle: DaemonHandle, join_handle: JoinHandle<()>) {
+    shutdown_handle.shutdown();
+    // Wait for server to finish with timeout
+    let _ = tokio::time::timeout(Duration::from_secs(2), join_handle).await;
+}
 
 // Test handler that echoes commands
 #[derive(Clone)]
@@ -91,18 +122,13 @@ impl CommandHandler for ErrorHandler {
 
 #[tokio::test]
 async fn test_basic_streaming() -> Result<()> {
-    let daemon_id = 5001;
+    let daemon_id = generate_test_daemon_id();
     let build_timestamp = 1234567890;
     let handler = EchoHandler;
 
-    // Start server in background
-    let server = DaemonServer::new(daemon_id, build_timestamp, handler);
-    let _server_handle = spawn(async move {
-        server.run().await.ok();
-    });
-
-    // Wait for server to start
-    sleep(Duration::from_millis(100)).await;
+    // Start server with cleanup
+    let (shutdown_handle, join_handle) =
+        start_test_daemon(daemon_id, build_timestamp, handler).await;
 
     // Connect client (note: this would normally auto-spawn, but we started manually)
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
@@ -115,22 +141,21 @@ async fn test_basic_streaming() -> Result<()> {
     // In a real integration test, we'd redirect stdout or use a different approach
     assert!(result.is_ok());
 
+    // Cleanup
+    stop_test_daemon(shutdown_handle, join_handle).await;
+
     Ok(())
 }
 
 #[tokio::test]
 async fn test_chunked_output() -> Result<()> {
-    let daemon_id = 5002;
+    let daemon_id = generate_test_daemon_id();
     let build_timestamp = 1234567891;
     let handler = ChunkedHandler;
 
-    // Start server
-    let server = DaemonServer::new(daemon_id, build_timestamp, handler);
-    let _server_handle = spawn(async move {
-        server.run().await.ok();
-    });
-
-    sleep(Duration::from_millis(100)).await;
+    // Start server with cleanup
+    let (shutdown_handle, join_handle) =
+        start_test_daemon(daemon_id, build_timestamp, handler).await;
 
     // Connect and execute
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
@@ -139,22 +164,21 @@ async fn test_chunked_output() -> Result<()> {
     let result = client.execute_command("test".to_string()).await;
     assert!(result.is_ok());
 
+    // Cleanup
+    stop_test_daemon(shutdown_handle, join_handle).await;
+
     Ok(())
 }
 
 #[tokio::test]
 async fn test_handler_error_reporting() -> Result<()> {
-    let daemon_id = 5003;
+    let daemon_id = generate_test_daemon_id();
     let build_timestamp = 1234567892;
     let handler = ErrorHandler;
 
-    // Start server
-    let server = DaemonServer::new(daemon_id, build_timestamp, handler);
-    let _server_handle = spawn(async move {
-        server.run().await.ok();
-    });
-
-    sleep(Duration::from_millis(100)).await;
+    // Start server with cleanup
+    let (shutdown_handle, join_handle) =
+        start_test_daemon(daemon_id, build_timestamp, handler).await;
 
     // Connect and execute
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
@@ -166,22 +190,21 @@ async fn test_handler_error_reporting() -> Result<()> {
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("Test error"));
 
+    // Cleanup
+    stop_test_daemon(shutdown_handle, join_handle).await;
+
     Ok(())
 }
 
 #[tokio::test]
 async fn test_multiple_sequential_commands() -> Result<()> {
-    let daemon_id = 5004;
+    let daemon_id = generate_test_daemon_id();
     let build_timestamp = 1234567893;
     let handler = EchoHandler;
 
-    // Start server
-    let server = DaemonServer::new(daemon_id, build_timestamp, handler);
-    let _server_handle = spawn(async move {
-        server.run().await.ok();
-    });
-
-    sleep(Duration::from_millis(100)).await;
+    // Start server with cleanup
+    let (shutdown_handle, join_handle) =
+        start_test_daemon(daemon_id, build_timestamp, handler).await;
 
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
 
@@ -196,22 +219,21 @@ async fn test_multiple_sequential_commands() -> Result<()> {
         sleep(Duration::from_millis(50)).await;
     }
 
+    // Cleanup
+    stop_test_daemon(shutdown_handle, join_handle).await;
+
     Ok(())
 }
 
 #[tokio::test]
 async fn test_connection_close_during_processing() -> Result<()> {
-    let daemon_id = 5005;
+    let daemon_id = generate_test_daemon_id();
     let build_timestamp = 1234567894;
     let handler = CancellableHandler;
 
-    // Start server
-    let server = DaemonServer::new(daemon_id, build_timestamp, handler);
-    let _server_handle = spawn(async move {
-        server.run().await.ok();
-    });
-
-    sleep(Duration::from_millis(100)).await;
+    // Start server with cleanup
+    let (shutdown_handle, join_handle) =
+        start_test_daemon(daemon_id, build_timestamp, handler).await;
 
     // Connect and start long-running command
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
@@ -232,6 +254,9 @@ async fn test_connection_close_during_processing() -> Result<()> {
 
     // Server should have cleaned up and be ready for new connections
     // This is tested implicitly - if the server hung, the next test would fail
+
+    // Cleanup
+    stop_test_daemon(shutdown_handle, join_handle).await;
 
     Ok(())
 }

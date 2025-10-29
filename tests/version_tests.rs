@@ -34,7 +34,7 @@ async fn test_version_handshake_success() -> Result<()> {
     let handler = SimpleHandler;
 
     // Start server with specific build timestamp
-    let server = DaemonServer::new(daemon_id, build_timestamp, handler);
+    let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -72,7 +72,7 @@ async fn test_version_mismatch_detection() -> Result<()> {
     let handler = SimpleHandler;
 
     // Start server with one timestamp
-    let server = DaemonServer::new(daemon_id, daemon_build_timestamp, handler);
+    let (server, _handle) = DaemonServer::new(daemon_id, daemon_build_timestamp, handler);
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -116,7 +116,7 @@ async fn test_multiple_version_handshakes() -> Result<()> {
     let handler = SimpleHandler;
 
     // Start server
-    let server = DaemonServer::new(daemon_id, build_timestamp, handler);
+    let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -159,7 +159,7 @@ async fn test_version_handshake_before_command() -> Result<()> {
     let handler = SimpleHandler;
 
     // Start server
-    let server = DaemonServer::new(daemon_id, build_timestamp, handler);
+    let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -201,7 +201,7 @@ async fn test_command_without_handshake_fails() -> Result<()> {
     let handler = SimpleHandler;
 
     // Start server
-    let server = DaemonServer::new(daemon_id, build_timestamp, handler);
+    let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -233,7 +233,7 @@ async fn test_concurrent_version_handshakes() -> Result<()> {
     let handler = SimpleHandler;
 
     // Start server
-    let server = DaemonServer::new(daemon_id, build_timestamp, handler);
+    let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });

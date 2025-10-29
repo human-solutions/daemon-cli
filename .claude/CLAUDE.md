@@ -39,6 +39,8 @@ echo "process file.txt" | cargo run --example cli
 
 **Server (`src/server.rs`)**
 - `DaemonServer` - Background daemon that processes commands
+- `DaemonServer::new()` returns `(DaemonServer, DaemonHandle)` - always includes shutdown capability
+- `DaemonHandle::shutdown()` gracefully stops the server; drop handle to run indefinitely
 - Single-task processing model (one command at a time)
 - Streaming output via tokio duplex channel
 - Cancellation via `CancellationToken` when connection closes

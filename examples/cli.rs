@@ -60,7 +60,7 @@ async fn run_daemon_mode() -> Result<()> {
     );
 
     let handler = CommandProcessor::new();
-    let server = DaemonServer::new(daemon_id, build_timestamp, handler);
+    let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
     server.run().await?;
 
     Ok(())

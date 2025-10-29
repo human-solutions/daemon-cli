@@ -234,14 +234,18 @@ impl DaemonClient {
                     stdout.write_all(&chunk).await?;
                     stdout.flush().await?;
                 }
+                Some(SocketMessage::CommandComplete) => {
+                    // Command completed successfully
+                    return Ok(());
+                }
                 Some(SocketMessage::CommandError(error)) => {
                     // Write error to stderr
                     eprintln!("Error: {}", error);
                     return Err(anyhow::anyhow!("Command failed: {}", error));
                 }
                 None => {
-                    // Connection closed - command completed successfully
-                    return Ok(());
+                    // Connection closed unexpectedly
+                    return Err(anyhow::anyhow!("Connection closed unexpectedly"));
                 }
                 _ => {
                     // Unexpected message type

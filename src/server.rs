@@ -2,7 +2,7 @@ use crate::transport::{SocketMessage, SocketServer};
 use crate::*;
 use anyhow::Result;
 use std::{fs, process, time::Duration};
-use tokio::{io::AsyncReadExt, select, spawn, time::sleep};
+use tokio::{io::AsyncReadExt, select, spawn, sync::oneshot, time::sleep};
 
 /// Daemon server that processes commands from CLI clients.
 ///
@@ -34,7 +34,8 @@ use tokio::{io::AsyncReadExt, select, spawn, time::sleep};
 ///
 /// // Demonstrate server creation
 /// let daemon = MyDaemon;
-/// let server = DaemonServer::new(1000, 1234567890, daemon);
+/// let (server, _handle) = DaemonServer::new(1000, 1234567890, daemon);
+/// // Use handle.shutdown() to stop the server, or drop it to run indefinitely
 /// ```
 pub struct DaemonServer<H> {
     /// Unique identifier for this daemon instance
@@ -42,6 +43,25 @@ pub struct DaemonServer<H> {
     /// Build timestamp for version compatibility checking
     pub build_timestamp: u64,
     handler: H,
+    shutdown_rx: oneshot::Receiver<()>,
+}
+
+/// Handle for controlling a running daemon server.
+///
+/// Call `shutdown()` to gracefully stop the server, or drop the handle
+/// to let the server run indefinitely.
+pub struct DaemonHandle {
+    shutdown_tx: oneshot::Sender<()>,
+}
+
+impl DaemonHandle {
+    /// Signal the daemon to shut down gracefully.
+    ///
+    /// Sends a shutdown signal to the server, causing it to stop accepting
+    /// new connections and exit cleanly.
+    pub fn shutdown(self) {
+        let _ = self.shutdown_tx.send(());
+    }
 }
 
 impl<H> DaemonServer<H>
@@ -50,18 +70,29 @@ where
 {
     /// Create a new daemon server instance.
     ///
+    /// Returns the server and a handle that can be used to shut it down gracefully.
+    ///
     /// # Parameters
     ///
     /// * `daemon_id` - Unique identifier for this daemon instance
     /// * `build_timestamp` - Build timestamp for version compatibility checking
     /// * `handler` - Your command handler implementation
     ///
-    pub fn new(daemon_id: u64, build_timestamp: u64, handler: H) -> Self {
-        Self {
+    /// # Returns
+    ///
+    /// A tuple of (DaemonServer, DaemonHandle). Call `shutdown()` on the handle
+    /// to gracefully stop the server, or drop it to let the server run indefinitely.
+    ///
+    pub fn new(daemon_id: u64, build_timestamp: u64, handler: H) -> (Self, DaemonHandle) {
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = Self {
             daemon_id,
             build_timestamp,
             handler,
-        }
+            shutdown_rx,
+        };
+        let handle = DaemonHandle { shutdown_tx };
+        (server, handle)
     }
 
     /// Start the daemon server and listen for client connections.
@@ -81,7 +112,8 @@ where
     /// - Performs version handshake on connection
     /// - Streams output as it's generated
     /// - Handles task cancellation via connection close detection
-    pub async fn run(self) -> Result<()> {
+    /// - Shuts down gracefully if shutdown signal is received
+    pub async fn run(mut self) -> Result<()> {
         let mut socket_server = SocketServer::new(self.daemon_id).await?;
 
         // Write PID file for precise process management
@@ -104,8 +136,17 @@ where
         );
 
         loop {
-            match socket_server.accept().await {
-                Ok(mut connection) => {
+            // Select between accepting connection and shutdown signal
+            let accept_result = select! {
+                result = socket_server.accept() => Some(result),
+                _ = &mut self.shutdown_rx => {
+                    println!("Daemon {} received shutdown signal", self.daemon_id);
+                    break;
+                }
+            };
+
+            match accept_result {
+                Some(Ok(mut connection)) => {
                     let handler = self.handler.clone();
                     let build_timestamp = self.build_timestamp;
 
@@ -163,13 +204,37 @@ where
                                 read_result = output_reader.read(&mut buffer) => {
                                     match read_result {
                                         Ok(0) => {
-                                            // EOF - handler closed output
-                                            // If handler failed, send error now after draining output
-                                            if let Some(error) = handler_error {
-                                                let _ = connection.send_message(&SocketMessage::CommandError(error.clone())).await;
-                                                break Err(anyhow::anyhow!("{}", error));
+                                            // CRITICAL FIX: If handler task hasn't been polled yet, check it now
+                                            // This ensures we capture any error before sending completion message
+                                            if let Some(task) = handler_task.take() {
+                                                match task.await {
+                                                    Ok(Err(e)) => {
+                                                        handler_error = Some(e.to_string());
+                                                    }
+                                                    Err(e) => {
+                                                        handler_error = Some(format!("Task panicked: {}", e));
+                                                    }
+                                                    _ => {}
+                                                }
                                             }
-                                            break Ok(());
+
+                                            // EOF - handler closed output
+                                            // Send completion message (error or success)
+                                            let result = if let Some(ref error) = handler_error {
+                                                let _ = connection.send_message(&SocketMessage::CommandError(error.clone())).await;
+                                                let _ = connection.flush().await;
+                                                Err(anyhow::anyhow!("{}", error))
+                                            } else {
+                                                let _ = connection.send_message(&SocketMessage::CommandComplete).await;
+                                                let _ = connection.flush().await;
+                                                Ok(())
+                                            };
+
+                                            // Wait for client to close connection (or timeout)
+                                            // This ensures the message is received before connection closes
+                                            let _ = connection.receive_message::<SocketMessage>().await;
+
+                                            break result;
                                         }
                                         Ok(n) => {
                                             // Send chunk to client
@@ -226,8 +291,12 @@ where
                         }
                     });
                 }
-                Err(e) => {
+                Some(Err(e)) => {
                     eprintln!("Failed to accept connection: {e}");
+                    break;
+                }
+                None => {
+                    // Should not happen with current logic
                     break;
                 }
             }

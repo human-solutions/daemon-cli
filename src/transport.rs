@@ -95,6 +95,10 @@ impl SocketClient {
         self.connection.send_message(message).await
     }
 
+    pub async fn flush(&mut self) -> Result<()> {
+        self.connection.flush().await
+    }
+
     pub async fn receive_message<T: DeserializeOwned>(&mut self) -> Result<Option<T>> {
         self.connection.receive_message().await
     }
@@ -118,6 +122,11 @@ impl SocketConnection {
         Ok(())
     }
 
+    pub async fn flush(&mut self) -> Result<()> {
+        self.framed.flush().await?;
+        Ok(())
+    }
+
     pub async fn receive_message<T: DeserializeOwned>(&mut self) -> Result<Option<T>> {
         if let Some(bytes) = self.framed.next().await {
             let bytes = bytes?;
@@ -135,5 +144,6 @@ pub enum SocketMessage {
     VersionCheck { build_timestamp: u64 },
     Command(String),
     OutputChunk(Vec<u8>),
+    CommandComplete,
     CommandError(String),
 }

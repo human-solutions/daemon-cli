@@ -73,7 +73,7 @@
 //! async fn main() -> Result<()> {
 //!     let handler = MyHandler;
 //!     let build_timestamp = 1234567890u64; // From build.rs
-//!     let server = DaemonServer::new(1000, build_timestamp, handler);
+//!     let (server, _handle) = DaemonServer::new(1000, build_timestamp, handler);
 //!     server.run().await?;
 //!     Ok(())
 //! }
@@ -105,7 +105,7 @@ mod server;
 mod transport;
 
 pub use client::DaemonClient;
-pub use server::DaemonServer;
+pub use server::{DaemonHandle, DaemonServer};
 
 #[cfg(test)]
 #[path = "lib_tests.rs"]
@@ -115,7 +115,7 @@ mod tests;
 ///
 /// Use `use daemon_rpc::prelude::*;` to import all commonly needed items.
 pub mod prelude {
-    pub use crate::{CommandHandler, DaemonClient, DaemonServer};
+    pub use crate::{CommandHandler, DaemonClient, DaemonHandle, DaemonServer};
     pub use anyhow::Result;
     pub use async_trait::async_trait;
     pub use tokio_util::sync::CancellationToken;
