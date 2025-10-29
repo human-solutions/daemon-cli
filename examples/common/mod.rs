@@ -1,232 +1,124 @@
-use anyhow::bail;
+use anyhow::Result;
 use daemon_rpc::prelude::*;
-use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use std::{
     env,
     path::PathBuf,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::time::sleep;
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum TestMethod {
-    ProcessFile {
-        path: PathBuf,
-        options: ProcessOptions,
-    },
-    GetStatus,
-    GetUptime,
-    LongTask {
-        duration_seconds: u64,
-        description: String,
-    },
-    QuickTask {
-        message: String,
-    },
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ProcessOptions {
-    pub compress: bool,
-    pub validate: bool,
-    pub backup: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct TestResult {
-    pub processed_bytes: u64,
-    pub files_created: Vec<String>,
-    pub duration_ms: u64,
-    pub status: String,
-}
-
-impl RpcMethod for TestMethod {
-    type Response = TestResult;
-}
+use tokio::{
+    io::{AsyncWrite, AsyncWriteExt},
+    time::sleep,
+};
 
 #[derive(Clone)]
-pub struct DemoDaemon {
+pub struct CommandProcessor {
     startup_time: Instant,
-    rich_mode: bool, // true for file_processor mode, false for test mode
 }
 
-impl DemoDaemon {
-    pub fn new(rich_mode: bool) -> Self {
+impl CommandProcessor {
+    pub fn new() -> Self {
         Self {
             startup_time: Instant::now(),
-            rich_mode,
         }
-    }
-
-    pub async fn simulate_startup_delay(&self) {
-        if self.rich_mode {
-            // Rich mode: 2-second startup with progress messages
-            println!("Initializing daemon subsystems...");
-            sleep(Duration::from_millis(500)).await;
-
-            println!("Loading handlers...");
-            sleep(Duration::from_millis(500)).await;
-
-            println!("Setting up engines...");
-            sleep(Duration::from_millis(500)).await;
-
-            println!("Preparing systems...");
-            sleep(Duration::from_millis(500)).await;
-
-            println!("Daemon ready!");
-        }
-        // Test mode: no startup delay
     }
 }
 
 #[async_trait]
-impl RpcHandler<TestMethod> for DemoDaemon {
+impl CommandHandler for CommandProcessor {
     async fn handle(
-        &mut self,
-        method: TestMethod,
+        &self,
+        command: &str,
+        mut output: impl AsyncWrite + Send + Unpin,
         cancel_token: CancellationToken,
-        status_tx: tokio::sync::mpsc::Sender<DaemonStatus>,
-    ) -> Result<TestResult> {
-        match method {
-            TestMethod::ProcessFile { path, options } => {
-                let start_time = Instant::now();
+    ) -> Result<()> {
+        let parts: Vec<&str> = command.trim().split_whitespace().collect();
 
-                status_tx
-                    .send(DaemonStatus::Busy(format!(
-                        "Starting processing of {:?}",
-                        path
-                    )))
-                    .await
-                    .ok();
-
-                // Simulate processing based on options and mode
-                let steps = if self.rich_mode { 50 } else { 5 };
-                for i in 0..steps {
-                    if cancel_token.is_cancelled() {
-                        status_tx.send(DaemonStatus::Ready).await.ok();
-                        bail!("File processing cancelled");
-                    }
-
-                    sleep(Duration::from_millis(if self.rich_mode { 100 } else { 10 })).await;
-
-                    if i % (steps / 5) == 0 {
-                        let progress = (i * 100) / steps;
-                        let phase = if options.compress && i < steps / 2 {
-                            "compressing"
-                        } else if options.validate {
-                            "validating"
-                        } else {
-                            "processing"
-                        };
-
-                        status_tx
-                            .send(DaemonStatus::Busy(format!(
-                                "Processing {:?}: {} {}%",
-                                path, phase, progress
-                            )))
-                            .await
-                            .ok();
-                    }
-                }
-
-                status_tx.send(DaemonStatus::Ready).await.ok();
-
-                let mut files_created = vec![format!("{}.processed", path.display())];
-                if options.compress {
-                    files_created.push(format!("{}.gz", path.display()));
-                }
-                if options.backup {
-                    files_created.push(format!("{}.backup", path.display()));
-                }
-
-                Ok(TestResult {
-                    processed_bytes: if self.rich_mode {
-                        1024 * 1024 * 5
-                    } else {
-                        1024
-                    },
-                    files_created,
-                    duration_ms: start_time.elapsed().as_millis() as u64,
-                    status: "Successfully processed file".to_string(),
-                })
+        match parts.get(0) {
+            Some(&"status") => {
+                output.write_all(b"Daemon ready for processing\n").await?;
+                Ok(())
             }
 
-            TestMethod::GetStatus => Ok(TestResult {
-                processed_bytes: 0,
-                files_created: vec![],
-                duration_ms: 0,
-                status: "Daemon ready for processing".to_string(),
-            }),
-
-            TestMethod::GetUptime => {
+            Some(&"uptime") => {
                 let uptime = self.startup_time.elapsed();
-                Ok(TestResult {
-                    processed_bytes: 0,
-                    files_created: vec![],
-                    duration_ms: uptime.as_millis() as u64,
-                    status: format!("Daemon uptime: {:.2}s", uptime.as_secs_f64()),
-                })
+                let message = format!("Daemon uptime: {:.2}s\n", uptime.as_secs_f64());
+                output.write_all(message.as_bytes()).await?;
+                Ok(())
             }
 
-            TestMethod::LongTask {
-                duration_seconds,
-                description,
-            } => {
-                let start_time = Instant::now();
+            Some(&"process") => {
+                let filename = parts.get(1).unwrap_or(&"file.txt");
 
-                status_tx
-                    .send(DaemonStatus::Busy(format!("Starting: {}", description)))
-                    .await
-                    .ok();
+                output
+                    .write_all(format!("Processing: {}\n", filename).as_bytes())
+                    .await?;
 
-                let total_steps = duration_seconds * 10;
+                // Simulate processing with progress updates
+                for i in 0..10 {
+                    if cancel_token.is_cancelled() {
+                        output.write_all(b"Processing cancelled\n").await?;
+                        return Err(anyhow::anyhow!("Processing cancelled"));
+                    }
+
+                    sleep(Duration::from_millis(200)).await;
+
+                    let progress = (i + 1) * 10;
+                    output
+                        .write_all(format!("Progress: {}%\n", progress).as_bytes())
+                        .await?;
+                }
+
+                output
+                    .write_all(format!("Successfully processed {}\n", filename).as_bytes())
+                    .await?;
+                Ok(())
+            }
+
+            Some(&"long") => {
+                let duration_secs = parts
+                    .get(1)
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(5);
+
+                output
+                    .write_all(
+                        format!("Starting long task ({} seconds)\n", duration_secs).as_bytes(),
+                    )
+                    .await?;
+
+                let total_steps = duration_secs * 10;
                 for i in 0..total_steps {
                     if cancel_token.is_cancelled() {
-                        status_tx.send(DaemonStatus::Ready).await.ok();
-                        bail!("Long task '{}' was cancelled", description);
+                        output.write_all(b"Task cancelled\n").await?;
+                        return Err(anyhow::anyhow!("Task cancelled"));
                     }
 
                     sleep(Duration::from_millis(100)).await;
 
                     if i % 10 == 0 {
                         let progress = (i * 100) / total_steps;
-                        status_tx
-                            .send(DaemonStatus::Busy(format!(
-                                "{}: {}% complete",
-                                description, progress
-                            )))
-                            .await
-                            .ok();
+                        output
+                            .write_all(format!("Progress: {}%\n", progress).as_bytes())
+                            .await?;
                     }
                 }
 
-                status_tx.send(DaemonStatus::Ready).await.ok();
-
-                Ok(TestResult {
-                    processed_bytes: duration_seconds * 1000,
-                    files_created: vec![format!("{}_result.txt", description.replace(' ', "_"))],
-                    duration_ms: start_time.elapsed().as_millis() as u64,
-                    status: format!("Completed: {}", description),
-                })
+                output.write_all(b"Task completed\n").await?;
+                Ok(())
             }
 
-            TestMethod::QuickTask { message } => {
-                status_tx
-                    .send(DaemonStatus::Busy(format!("Quick task: {}", message)))
-                    .await
-                    .ok();
-
-                sleep(Duration::from_millis(100)).await;
-
-                status_tx.send(DaemonStatus::Ready).await.ok();
-
-                Ok(TestResult {
-                    processed_bytes: 100,
-                    files_created: vec![],
-                    duration_ms: 100,
-                    status: format!("Quick task completed: {}", message),
-                })
+            Some(&"echo") => {
+                // Echo back the rest of the command
+                let message = parts[1..].join(" ");
+                output.write_all(message.as_bytes()).await?;
+                output.write_all(b"\n").await?;
+                Ok(())
             }
+
+            _ => Err(anyhow::anyhow!(
+                "Unknown command. Available: status, uptime, process [file], long [seconds], echo [message]"
+            )),
         }
     }
 }
@@ -236,7 +128,7 @@ pub fn get_daemon_path() -> PathBuf {
     exe_path.push("target");
     exe_path.push("debug");
     exe_path.push("examples");
-    exe_path.push("all_in_one");
+    exe_path.push("cli");
 
     if cfg!(windows) {
         exe_path.set_extension("exe");
@@ -252,11 +144,10 @@ pub fn get_build_timestamp() -> u64 {
         .as_secs()
 }
 
-pub fn parse_daemon_args() -> Result<(u64, u64, bool)> {
+pub fn parse_daemon_args() -> Result<(u64, u64)> {
     let args: Vec<String> = env::args().collect();
     let mut daemon_id = None;
     let mut build_timestamp = None;
-    let mut rich_mode = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -270,7 +161,7 @@ pub fn parse_daemon_args() -> Result<(u64, u64, bool)> {
                     );
                     i += 2;
                 } else {
-                    bail!("--daemon-id requires a value");
+                    return Err(anyhow::anyhow!("--daemon-id requires a value"));
                 }
             }
             "--build-timestamp" => {
@@ -282,12 +173,8 @@ pub fn parse_daemon_args() -> Result<(u64, u64, bool)> {
                     );
                     i += 2;
                 } else {
-                    bail!("--build-timestamp requires a value");
+                    return Err(anyhow::anyhow!("--build-timestamp requires a value"));
                 }
-            }
-            "--rich" => {
-                rich_mode = true;
-                i += 1;
             }
             _ => {
                 i += 1;
@@ -298,7 +185,5 @@ pub fn parse_daemon_args() -> Result<(u64, u64, bool)> {
     let daemon_id = daemon_id.ok_or_else(|| anyhow::anyhow!("--daemon-id is required"))?;
     let build_timestamp = build_timestamp.unwrap_or_else(get_build_timestamp);
 
-    Ok((daemon_id, build_timestamp, rich_mode))
+    Ok((daemon_id, build_timestamp))
 }
-
-// Note: This is a module file, not a binary - used by all_in_one.rs

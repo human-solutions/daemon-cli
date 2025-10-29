@@ -1,37 +1,35 @@
-use crate::*;
 use anyhow::Result;
-use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{env, fs, path::PathBuf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-/// Generate socket path for a daemon ID
+// Internal: Generate socket path for a daemon ID
 pub fn socket_path(daemon_id: u64) -> PathBuf {
     let temp_dir = env::temp_dir();
     temp_dir.join(format!("daemon-rpc-{daemon_id}.sock"))
 }
 
-/// Generate PID file path for a daemon ID
+// Internal: Generate PID file path for a daemon ID
 pub fn pid_path(daemon_id: u64) -> PathBuf {
     let temp_dir = env::temp_dir();
     temp_dir.join(format!("daemon-rpc-{daemon_id}.pid"))
 }
 
-/// Serialize a message to bytes
-pub fn serialize_message<T: Serialize>(message: &T) -> Result<Bytes> {
+// Internal: Serialize a message to bytes
+pub fn serialize_message<T: Serialize>(message: &T) -> Result<Vec<u8>> {
     let json = serde_json::to_vec(message)?;
-    Ok(Bytes::from(json))
+    Ok(json)
 }
 
-/// Deserialize bytes to a message
+// Internal: Deserialize bytes to a message
 pub fn deserialize_message<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     let message = serde_json::from_slice(bytes)?;
     Ok(message)
 }
 
-/// Unix socket server for handling RPC requests
+// Internal: Unix socket server for handling RPC requests
 pub struct SocketServer {
     listener: UnixListener,
     socket_path: PathBuf,
@@ -79,7 +77,7 @@ impl Drop for SocketServer {
     }
 }
 
-/// Unix socket client for sending RPC requests
+// Internal: Unix socket client for sending RPC requests
 pub struct SocketClient {
     connection: SocketConnection,
 }
@@ -102,7 +100,7 @@ impl SocketClient {
     }
 }
 
-/// Framed connection over Unix socket
+// Internal: Framed connection over Unix socket
 pub struct SocketConnection {
     framed: Framed<UnixStream, LengthDelimitedCodec>,
 }
@@ -116,7 +114,7 @@ impl SocketConnection {
 
     pub async fn send_message<T: Serialize>(&mut self, message: &T) -> Result<()> {
         let bytes = serialize_message(message)?;
-        self.framed.send(bytes).await?;
+        self.framed.send(bytes.into()).await?;
         Ok(())
     }
 
@@ -131,12 +129,11 @@ impl SocketConnection {
     }
 }
 
-/// Message types for socket communication
+// Internal: Message types for socket communication
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(bound = "M: RpcMethod + Serialize + DeserializeOwned")]
-pub enum SocketMessage<M: RpcMethod> {
-    Request(RpcRequest<M>),
-    Response(RpcResponse<M::Response>),
-    Cancel,
-    CancelAck,
+pub enum SocketMessage {
+    VersionCheck { build_timestamp: u64 },
+    Command(String),
+    OutputChunk(Vec<u8>),
+    CommandError(String),
 }

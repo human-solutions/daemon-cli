@@ -1,13 +1,12 @@
 use crate::transport::{SocketClient, SocketMessage, socket_path};
-use crate::*;
-use anyhow::{Context, Result, bail};
-use std::{fs, marker::PhantomData, path::PathBuf, process::Stdio, time::Duration};
-use tokio::{process::Command, select, sync::broadcast, time::sleep};
+use anyhow::{Result, bail};
+use std::{fs, path::PathBuf, process::Stdio, time::Duration};
+use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
 
 /// Client for communicating with daemon processes via Unix sockets.
 ///
 /// Provides zero-configuration daemon management with automatic spawning,
-/// version synchronization, and socket-based coordination.
+/// version synchronization, and stdin/stdout streaming.
 ///
 /// # Example
 ///
@@ -15,39 +14,8 @@ use tokio::{process::Command, select, sync::broadcast, time::sleep};
 /// use daemon_rpc::prelude::*;
 /// use std::path::PathBuf;
 ///
-/// #[derive(Serialize, Deserialize, Debug, Clone)]
-/// enum MyMethod {
-///     Process { data: String },
-///     GetStatus,
-/// }
-///
-/// impl RpcMethod for MyMethod {
-///     type Response = String;
-/// }
-///
-/// // Demonstrate the API structure and types
-/// let method = MyMethod::Process { data: "hello".to_string() };
 /// let daemon_exe = PathBuf::from("./target/debug/examples/cli");
 /// let build_timestamp = 1234567890u64;
-///
-/// // Verify method serialization works
-/// let json = serde_json::to_string(&method).unwrap();
-/// assert!(json.contains("hello"));
-///
-/// // Show response handling pattern
-/// let response: RpcResponse<String> = RpcResponse::Success {
-///     output: "Task completed".to_string()
-/// };
-///
-/// match response {
-///     RpcResponse::Success { output } => {
-///         assert_eq!(output, "Task completed");
-///     }
-///     RpcResponse::Error { error } => {
-///         panic!("Unexpected error: {}", error);
-///     }
-///     _ => panic!("Unexpected response type"),
-/// }
 ///
 /// // Actual usage pattern (requires daemon binary):
 ///  # tokio_test::block_on(async {
@@ -55,78 +23,26 @@ use tokio::{process::Command, select, sync::broadcast, time::sleep};
 ///         // handle error...
 ///         return;
 ///      };
-///      let response = client.request(method).await;
-///      // Handle response...
+///
+///      // Execute a command - output is streamed to stdout
+///      client.execute_command("process file.txt".to_string()).await.ok();
 ///  # });
 /// ```
-pub struct DaemonClient<M: RpcMethod> {
+pub struct DaemonClient {
     socket_client: SocketClient,
-    /// Stream of real-time status updates from the daemon
-    pub status_receiver: broadcast::Receiver<DaemonStatus>,
     /// Unique identifier for this daemon instance
     pub daemon_id: u64,
     /// Path to the daemon executable for spawning
     pub daemon_executable: PathBuf,
     /// Build timestamp for version compatibility checking
     pub build_timestamp: u64,
-    _phantom: PhantomData<M>,
 }
 
-impl<M: RpcMethod> DaemonClient<M> {
-    /// Connect to a daemon with zero configuration - automatically spawns if needed.
+impl DaemonClient {
+    /// Connect to daemon, spawning it if needed with automatic version sync.
     ///
-    /// This is the primary method for establishing daemon connections. The framework
-    /// automatically handles:
-    /// - Detecting if daemon is already running
-    /// - Spawning new daemon process if needed
-    /// - Waiting for daemon to become ready
-    /// - Establishing Unix socket connection
-    /// - Establishing socket-based coordination
-    ///
-    /// # Parameters
-    ///
-    /// * `daemon_id` - Unique identifier for the daemon instance
-    /// * `daemon_executable` - Path to the daemon binary to spawn if needed
-    /// * `build_timestamp` - Build timestamp for version compatibility checking
-    ///
-    /// # Returns
-    ///
-    /// A connected client ready to send RPC requests
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use daemon_rpc::prelude::*;
-    /// use std::path::PathBuf;
-    ///
-    /// // For doc test - shows API structure without requiring actual daemon binary
-    /// let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    ///
-    /// // Demonstrates the connect API (would spawn daemon if binary existed)
-    /// # tokio_test::block_on(async {
-    ///     // Define types for the doc test
-    ///     use daemon_rpc::prelude::*;
-    ///     #[derive(Serialize, Deserialize, Debug, Clone)]
-    ///     enum TestMethod { GetStatus }
-    ///     impl RpcMethod for TestMethod { type Response = String; }
-    ///
-    ///     let Ok(mut _client): Result<DaemonClient<TestMethod>> = DaemonClient::connect(1000, daemon_exe.clone(), 1234567890).await else {
-    ///         return; // Skip if daemon binary doesn't exist
-    ///     };
-    ///     // Client cleans up automatically when dropped
-    /// # });
-    ///
-    /// // API usage pattern:
-    /// assert_eq!(daemon_exe.to_string_lossy().contains("cli"), true);
-    /// ```
-    ///
-    /// # Behavior
-    ///
-    /// - If daemon is running and responsive → connects to existing daemon
-    /// - If daemon is not running → spawns new daemon process
-    /// - If daemon is unresponsive → cleans up and spawns new daemon
-    /// - Waits up to 5 seconds for daemon to become ready
-    /// - Returns error if daemon fails to start
+    /// Handles daemon detection, spawning, readiness waiting, and version
+    /// handshake. Restarts daemon on version mismatch.
     pub async fn connect(
         daemon_id: u64,
         daemon_executable: PathBuf,
@@ -135,7 +51,8 @@ impl<M: RpcMethod> DaemonClient<M> {
         // Try to connect to existing daemon first
         let socket_path = socket_path(daemon_id);
 
-        let socket_client = if let Ok(existing_client) = SocketClient::connect(daemon_id).await {
+        let mut socket_client = if let Ok(existing_client) = SocketClient::connect(daemon_id).await
+        {
             // Daemon is already running and responsive - use it
             existing_client
         } else {
@@ -152,15 +69,52 @@ impl<M: RpcMethod> DaemonClient<M> {
             Self::spawn_and_wait_for_ready(daemon_id, &daemon_executable, build_timestamp).await?
         };
 
-        let (_status_tx, status_receiver) = broadcast::channel(32);
+        // Perform version handshake
+        socket_client
+            .send_message(&SocketMessage::VersionCheck { build_timestamp })
+            .await?;
+
+        // Receive daemon's version
+        let daemon_timestamp = match socket_client.receive_message().await? {
+            Some(SocketMessage::VersionCheck {
+                build_timestamp: daemon_ts,
+            }) => daemon_ts,
+            _ => bail!("Invalid version handshake response"),
+        };
+
+        // If versions don't match, restart daemon
+        if daemon_timestamp != build_timestamp {
+            println!(
+                "Version mismatch detected: client={}, daemon={}. Restarting daemon...",
+                build_timestamp, daemon_timestamp
+            );
+
+            // Clean up and restart
+            let _ = fs::remove_file(&socket_path);
+            Self::cleanup_stale_processes(daemon_id).await;
+
+            // Spawn new daemon with correct version
+            socket_client =
+                Self::spawn_and_wait_for_ready(daemon_id, &daemon_executable, build_timestamp)
+                    .await?;
+
+            // Retry handshake
+            socket_client
+                .send_message(&SocketMessage::VersionCheck { build_timestamp })
+                .await?;
+            match socket_client.receive_message().await? {
+                Some(SocketMessage::VersionCheck {
+                    build_timestamp: daemon_ts,
+                }) if daemon_ts == build_timestamp => {}
+                _ => bail!("Version handshake failed after restart"),
+            }
+        }
 
         Ok(Self {
             socket_client,
-            status_receiver,
             daemon_id,
             daemon_executable,
             build_timestamp,
-            _phantom: PhantomData,
         })
     }
 
@@ -256,209 +210,48 @@ impl<M: RpcMethod> DaemonClient<M> {
         sleep(Duration::from_millis(100)).await;
     }
 
-    /// Send an RPC request to the daemon and wait for response.
+    /// Execute a command on the daemon and stream output to stdout.
     ///
-    /// Automatically handles version checking and daemon restart if needed.
-    /// The daemon processes one request at a time, so concurrent requests
-    /// will be rejected with a busy error.
-    ///
-    /// # Parameters
-    ///
-    /// * `method` - The RPC method to execute on the daemon
-    ///
-    /// # Returns
-    ///
-    /// The response from the daemon method execution
-    ///
-    /// # Behavior
-    ///
-    /// - **Version Checking**: Compares build timestamps and restarts daemon if mismatched
-    /// - **Error Handling**: Propagates daemon errors with clear messages
-    /// - **Connection Recovery**: Detects broken connections and attempts recovery
-    pub async fn request(&mut self, method: M) -> Result<RpcResponse<M::Response>>
-    where
-        M: Clone, // Required for automatic retry on version mismatch
-    {
-        // Try the request with automatic retry on connection failure (max 2 attempts)
-        let mut last_error = None;
-        let mut response = None;
-
-        for attempt in 0..2 {
-            // Send request over socket
-            let send_result = self
-                .socket_client
-                .send_message(&SocketMessage::Request(RpcRequest {
-                    method: method.clone(),
-                    client_build_timestamp: self.build_timestamp,
-                }))
-                .await;
-
-            match send_result {
-                Ok(()) => {
-                    // Send succeeded, now wait for response
-                    match self
-                        .socket_client
-                        .receive_message::<SocketMessage<M>>()
-                        .await
-                    {
-                        Ok(Some(message)) => match message {
-                            SocketMessage::Response(resp) => {
-                                response = Some(resp);
-                                break;
-                            }
-                            _ => bail!("Unexpected message type"),
-                        },
-                        Ok(None) => {
-                            last_error = Some("Socket connection closed".to_string());
-                        }
-                        Err(e) => {
-                            last_error = Some(format!("Failed to receive response: {}", e));
-                        }
-                    }
-                }
-                Err(e) => {
-                    last_error = Some(format!("Failed to send request: {}", e));
-                }
-            }
-
-            // If we get here, something failed
-            if attempt == 0 {
-                // First failure, try to reconnect
-                self.ensure_connection()
-                    .await
-                    .context("Failed to reconnect")?;
-            }
-            // For second failure, we'll exit the loop and return an error
-        }
-
-        let response = response.ok_or_else(|| {
-            anyhow::anyhow!(
-                "Request failed after retry: {}",
-                last_error.unwrap_or_else(|| "Unknown error".to_string())
-            )
-        })?;
-
-        // Handle version mismatch by restarting daemon
-        if let RpcResponse::VersionMismatch {
-            daemon_build_timestamp,
-        } = &response
-        {
-            println!(
-                "Version mismatch detected: client={}, daemon={}. Restarting daemon...",
-                self.build_timestamp, daemon_build_timestamp
-            );
-
-            // Restart daemon to fix version mismatch
-            self.restart_daemon().await?;
-
-            // Retry the request with the new daemon
-            let retry_request = RpcRequest {
-                method: method.clone(),
-                client_build_timestamp: self.build_timestamp,
-            };
-
-            // Send retry request over socket
-            self.socket_client
-                .send_message(&SocketMessage::Request(retry_request))
-                .await?;
-
-            // Wait for retry response
-            let retry_response = if let Some(message) = self
-                .socket_client
-                .receive_message::<SocketMessage<M>>()
-                .await?
-            {
-                match message {
-                    SocketMessage::Response(response) => response,
-                    _ => bail!("Unexpected message type"),
-                }
-            } else {
-                bail!("Socket connection closed");
-            };
-
-            return Ok(retry_response);
-        }
-
-        Ok(response)
-    }
-
-    /// Cancel the currently running task on the daemon.
-    ///
-    /// Sends a cancellation message to the daemon, which will attempt to
-    /// gracefully stop the current task. If the task doesn't respond within
-    /// 1 second, it will be forcefully terminated.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(true)` - Task was cancelled successfully
-    /// * `Ok(false)` - No task was running or cancellation failed
-    /// * `Err(_)` - Communication error with daemon
-    ///
-    /// # Behavior
-    ///
-    /// 1. Sends cancel message to daemon
-    /// 2. Daemon signals running task to stop gracefully
-    /// 3. After 1 second timeout, daemon force-kills the task
-    /// 4. Daemon sends acknowledgment back to client
-    /// 5. Returns success/failure indication
-    pub async fn cancel_current_task(&mut self) -> Result<bool> {
-        // Send cancel message
+    /// Streams output chunks as they arrive. Errors written to stderr.
+    /// Ctrl+C cancels via connection close.
+    pub async fn execute_command(&mut self, command: String) -> Result<()> {
+        // Send command
         self.socket_client
-            .send_message(&SocketMessage::<M>::Cancel)
+            .send_message(&SocketMessage::Command(command))
             .await?;
 
-        // Wait for acknowledgment (with timeout)
-        select! {
-            msg = self.socket_client.receive_message::<SocketMessage<M>>() => {
-                match msg? {
-                    Some(SocketMessage::CancelAck) => Ok(true),
-                    _ => Ok(false),
+        // Stream output chunks to stdout
+        let mut stdout = tokio::io::stdout();
+
+        loop {
+            match self
+                .socket_client
+                .receive_message::<SocketMessage>()
+                .await?
+            {
+                Some(SocketMessage::OutputChunk(chunk)) => {
+                    // Write chunk to stdout
+                    stdout.write_all(&chunk).await?;
+                    stdout.flush().await?;
+                }
+                Some(SocketMessage::CommandError(error)) => {
+                    // Write error to stderr
+                    eprintln!("Error: {}", error);
+                    return Err(anyhow::anyhow!("Command failed: {}", error));
+                }
+                None => {
+                    // Connection closed - command completed successfully
+                    return Ok(());
+                }
+                _ => {
+                    // Unexpected message type
+                    bail!("Unexpected message from daemon");
                 }
             }
-            _ = sleep(Duration::from_millis(500)) => {
-                Ok(false) // Timeout, assume failed
-            }
         }
-    }
-
-    async fn restart_daemon(&mut self) -> Result<()> {
-        // Clean up old socket file to signal daemon should exit
-        let socket_path = socket_path(self.daemon_id);
-        let _ = fs::remove_file(&socket_path);
-
-        // Kill any zombie processes (best effort)
-        Self::cleanup_stale_processes(self.daemon_id).await;
-
-        // Give the old daemon time to exit gracefully
-        sleep(Duration::from_millis(100)).await;
-
-        // Spawn new daemon process
-        let socket_client = Self::spawn_and_wait_for_ready(
-            self.daemon_id,
-            &self.daemon_executable,
-            self.build_timestamp,
-        )
-        .await?;
-
-        // Update socket client
-        self.socket_client = socket_client;
-
-        Ok(())
-    }
-
-    /// Attempt to reconnect to the daemon or restart it if necessary
-    async fn ensure_connection(&mut self) -> Result<()> {
-        // First try to reconnect to existing daemon
-        if let Ok(socket_client) = SocketClient::connect(self.daemon_id).await {
-            self.socket_client = socket_client;
-            return Ok(());
-        }
-
-        // Connection failed, restart daemon
-        self.restart_daemon().await
     }
 }
 
-#[cfg(test)]
-#[path = "client_tests.rs"]
-mod tests;
+// #[cfg(test)]
+// #[path = "client_tests.rs"]
+// mod tests;

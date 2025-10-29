@@ -1,45 +1,134 @@
+use crate::transport::SocketMessage;
 use crate::*;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-enum TestMethod {
-    ProcessFile { path: std::path::PathBuf },
-    GetStatus,
+// Test handler for unit tests
+#[derive(Clone)]
+struct TestHandler {
+    output_text: String,
 }
 
-impl RpcMethod for TestMethod {
-    type Response = String;
+impl TestHandler {
+    fn new(output_text: String) -> Self {
+        Self { output_text }
+    }
+}
+
+#[async_trait]
+impl CommandHandler for TestHandler {
+    async fn handle(
+        &self,
+        _command: &str,
+        mut output: impl AsyncWrite + Send + Unpin,
+        _cancel: CancellationToken,
+    ) -> Result<()> {
+        output.write_all(self.output_text.as_bytes()).await?;
+        Ok(())
+    }
 }
 
 #[test]
-fn test_rpc_structures_serialization() {
-    let method = TestMethod::ProcessFile {
-        path: "/tmp/test.txt".into(),
-    };
+fn test_command_handler_trait_compiles() {
+    // Verify the trait compiles correctly
+    let _handler = TestHandler::new("test output".to_string());
+    // Note: CommandHandler is not object-safe due to impl AsyncWrite parameter
+    // This is expected and correct for our use case
+}
 
-    let request = RpcRequest {
-        method,
-        client_build_timestamp: 1234567890,
+#[test]
+fn test_socket_message_serialization() {
+    // Test VersionCheck message
+    let version_msg = SocketMessage::VersionCheck {
+        build_timestamp: 1234567890,
     };
+    let serialized = serde_json::to_string(&version_msg).unwrap();
+    let deserialized: SocketMessage = serde_json::from_str(&serialized).unwrap();
+    match deserialized {
+        SocketMessage::VersionCheck { build_timestamp } => {
+            assert_eq!(build_timestamp, 1234567890);
+        }
+        _ => panic!("Wrong message type"),
+    }
 
-    // Test serialization
-    let serialized = serde_json::to_string(&request).unwrap();
-    let deserialized: RpcRequest<TestMethod> = serde_json::from_str(&serialized).unwrap();
+    // Test Command message
+    let command_msg = SocketMessage::Command("test command".to_string());
+    let serialized = serde_json::to_string(&command_msg).unwrap();
+    let deserialized: SocketMessage = serde_json::from_str(&serialized).unwrap();
+    match deserialized {
+        SocketMessage::Command(cmd) => {
+            assert_eq!(cmd, "test command");
+        }
+        _ => panic!("Wrong message type"),
+    }
 
-    assert_eq!(deserialized.client_build_timestamp, 1234567890);
+    // Test OutputChunk message
+    let chunk_msg = SocketMessage::OutputChunk(vec![1, 2, 3, 4, 5]);
+    let serialized = serde_json::to_string(&chunk_msg).unwrap();
+    let deserialized: SocketMessage = serde_json::from_str(&serialized).unwrap();
+    match deserialized {
+        SocketMessage::OutputChunk(data) => {
+            assert_eq!(data, vec![1, 2, 3, 4, 5]);
+        }
+        _ => panic!("Wrong message type"),
+    }
 
-    // Test response types
-    let success_response: RpcResponse<String> = RpcResponse::Success {
-        output: "test".to_string(),
-    };
-    let error_response: RpcResponse<String> = RpcResponse::Error {
-        error: "test error".to_string(),
-    };
-    let version_mismatch: RpcResponse<String> = RpcResponse::VersionMismatch {
-        daemon_build_timestamp: 9876543210,
-    };
+    // Test CommandError message
+    let error_msg = SocketMessage::CommandError("test error".to_string());
+    let serialized = serde_json::to_string(&error_msg).unwrap();
+    let deserialized: SocketMessage = serde_json::from_str(&serialized).unwrap();
+    match deserialized {
+        SocketMessage::CommandError(err) => {
+            assert_eq!(err, "test error");
+        }
+        _ => panic!("Wrong message type"),
+    }
+}
 
-    // Test that responses can be serialized
-    assert!(serde_json::to_string(&success_response).is_ok());
-    assert!(serde_json::to_string(&error_response).is_ok());
-    assert!(serde_json::to_string(&version_mismatch).is_ok());
+#[tokio::test]
+async fn test_handler_basic_output() {
+    let handler = TestHandler::new("Hello, World!".to_string());
+    let mut output = Vec::new();
+    let cancel = CancellationToken::new();
+
+    let result = handler.handle("test", &mut output, cancel).await;
+    assert!(result.is_ok());
+    assert_eq!(String::from_utf8(output).unwrap(), "Hello, World!");
+}
+
+#[tokio::test]
+async fn test_handler_with_cancellation() {
+    // Test that handler receives cancellation token
+    #[derive(Clone)]
+    struct CancellableHandler;
+
+    #[async_trait]
+    impl CommandHandler for CancellableHandler {
+        async fn handle(
+            &self,
+            _command: &str,
+            mut output: impl AsyncWrite + Send + Unpin,
+            cancel: CancellationToken,
+        ) -> Result<()> {
+            // Simulate work with cancellation checking
+            for i in 0..10 {
+                if cancel.is_cancelled() {
+                    output.write_all(b"Cancelled\n").await?;
+                    return Err(anyhow::anyhow!("Cancelled"));
+                }
+                output.write_all(format!("Step {}\n", i).as_bytes()).await?;
+            }
+            Ok(())
+        }
+    }
+
+    let handler = CancellableHandler;
+    let mut output = Vec::new();
+    let cancel = CancellationToken::new();
+
+    // Cancel immediately
+    cancel.cancel();
+
+    let result = handler.handle("test", &mut output, cancel).await;
+    assert!(result.is_err());
+    assert!(String::from_utf8(output).unwrap().contains("Cancelled"));
 }

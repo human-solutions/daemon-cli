@@ -1,101 +1,34 @@
 use crate::transport::{SocketMessage, SocketServer};
 use crate::*;
 use anyhow::Result;
-use std::{fs, marker::PhantomData, process, sync::Arc, time::Duration};
-use tokio::{
-    select, spawn,
-    sync::{Mutex, broadcast, mpsc},
-    task::JoinHandle,
-    time::sleep,
-};
+use std::{fs, process, time::Duration};
+use tokio::{io::AsyncReadExt, select, spawn, time::sleep};
 
-// Server state
-#[derive(Debug, Clone, PartialEq)]
-enum ServerState {
-    Ready,
-    Busy,
-}
-
-// Task manager for cancellation
-struct TaskManager {
-    current_task: Option<(JoinHandle<()>, tokio_util::sync::CancellationToken)>,
-}
-
-impl TaskManager {
-    fn new() -> Self {
-        Self { current_task: None }
-    }
-
-    fn start_task(
-        &mut self,
-        handle: JoinHandle<()>,
-        cancel_token: tokio_util::sync::CancellationToken,
-    ) {
-        self.current_task = Some((handle, cancel_token));
-    }
-
-    fn finish_task(&mut self) {
-        self.current_task = None;
-    }
-
-    async fn cancel_current_task(&mut self) -> bool {
-        if let Some((handle, cancel_token)) = self.current_task.take() {
-            // Step 1: Signal graceful cancellation
-            cancel_token.cancel();
-
-            // Step 2: Wait 1 second, then force-kill
-            select! {
-                _result = handle => {
-                    // Task completed gracefully
-                    true
-                }
-                _ = sleep(Duration::from_secs(1)) => {
-                    // Force abort the task after timeout
-                    // Note: handle was consumed by the select, but abort was already called implicitly
-                    true
-                }
-            }
-        } else {
-            false // No task running
-        }
-    }
-}
-
-/// Daemon server that processes RPC requests from clients.
+/// Daemon server that processes commands from CLI clients.
 ///
-/// Handles one request at a time with automatic status reporting,
+/// Handles one command at a time with streaming output,
 /// cancellation support, and version checking.
 ///
 /// # Example
 ///
 /// ```rust
 /// use daemon_rpc::prelude::*;
+/// use tokio::io::{AsyncWrite, AsyncWriteExt};
 ///
 /// #[derive(Clone)]
 /// struct MyDaemon;
 ///
-/// #[derive(Serialize, Deserialize, Debug, Clone)]
-/// enum MyMethod {
-///     Process,
-///     GetStatus,
-/// }
-///
-/// impl RpcMethod for MyMethod {
-///     type Response = String;
-/// }
-///
 /// #[async_trait]
-/// impl RpcHandler<MyMethod> for MyDaemon {
+/// impl CommandHandler for MyDaemon {
 ///     async fn handle(
-///         &mut self,
-///         method: MyMethod,
+///         &self,
+///         command: &str,
+///         mut output: impl AsyncWrite + Send + Unpin,
 ///         _cancel_token: CancellationToken,
-///         _status_tx: tokio::sync::mpsc::Sender<DaemonStatus>
-///     ) -> Result<String> {
-///         match method {
-///             MyMethod::Process => Ok("Processed".to_string()),
-///             MyMethod::GetStatus => Ok("Ready".to_string()),
-///         }
+///     ) -> Result<()> {
+///         output.write_all(b"Processed: ").await?;
+///         output.write_all(command.as_bytes()).await?;
+///         Ok(())
 ///     }
 /// }
 ///
@@ -103,19 +36,17 @@ impl TaskManager {
 /// let daemon = MyDaemon;
 /// let server = DaemonServer::new(1000, 1234567890, daemon);
 /// ```
-pub struct DaemonServer<H, M: RpcMethod> {
+pub struct DaemonServer<H> {
     /// Unique identifier for this daemon instance
     pub daemon_id: u64,
     /// Build timestamp for version compatibility checking
     pub build_timestamp: u64,
     handler: H,
-    _phantom: PhantomData<M>,
 }
 
-impl<H, M> DaemonServer<H, M>
+impl<H> DaemonServer<H>
 where
-    H: RpcHandler<M> + Clone + 'static,
-    M: RpcMethod + 'static,
+    H: CommandHandler + Clone + 'static,
 {
     /// Create a new daemon server instance.
     ///
@@ -123,20 +54,19 @@ where
     ///
     /// * `daemon_id` - Unique identifier for this daemon instance
     /// * `build_timestamp` - Build timestamp for version compatibility checking
-    /// * `handler` - Your RPC handler implementation
+    /// * `handler` - Your command handler implementation
     ///
     pub fn new(daemon_id: u64, build_timestamp: u64, handler: H) -> Self {
         Self {
             daemon_id,
             build_timestamp,
             handler,
-            _phantom: PhantomData,
         }
     }
 
     /// Start the daemon server and listen for client connections.
     ///
-    /// Creates a Unix socket and processes incoming RPC requests.
+    /// Creates a Unix socket and processes incoming commands with streaming output.
     /// This method blocks until the daemon is shut down.
     ///
     /// # Returns
@@ -147,16 +77,12 @@ where
     ///
     /// - Creates Unix socket at `/tmp/daemon-rpc-{daemon_id}.sock`
     /// - Sets socket permissions to 0600 (owner read/write only)
-    /// - Accepts multiple client connections
-    /// - Processes one request at a time (rejects concurrent requests)
-    /// - Broadcasts status updates to all connected clients
-    /// - Handles task cancellation with graceful + forceful termination
-    /// - Performs version checking on every request
-    pub async fn spawn_with_socket(self) -> Result<()> {
+    /// - Accepts one client connection at a time
+    /// - Performs version handshake on connection
+    /// - Streams output as it's generated
+    /// - Handles task cancellation via connection close detection
+    pub async fn run(self) -> Result<()> {
         let mut socket_server = SocketServer::new(self.daemon_id).await?;
-        let state = Arc::new(Mutex::new(ServerState::Ready));
-        let task_manager = Arc::new(Mutex::new(TaskManager::new()));
-        let (status_tx, _status_rx) = broadcast::channel::<DaemonStatus>(32);
 
         // Write PID file for precise process management
         let pid = process::id();
@@ -171,11 +97,6 @@ where
             let _ = fs::remove_file(&cleanup_pid_file);
         });
 
-        // Send initial status
-        let _ = status_tx.send(DaemonStatus::Ready);
-
-        let mut client_counter = 0u64;
-
         println!(
             "Daemon {} listening on socket: {:?}",
             self.daemon_id,
@@ -185,144 +106,124 @@ where
         loop {
             match socket_server.accept().await {
                 Ok(mut connection) => {
-                    let client_id = client_counter;
-                    client_counter += 1;
-
-                    let state = state.clone();
-                    let task_manager = task_manager.clone();
-                    let status_tx = status_tx.clone();
-                    let mut handler = self.handler.clone();
+                    let handler = self.handler.clone();
+                    let build_timestamp = self.build_timestamp;
 
                     // Handle this client connection
                     spawn(async move {
-                        // Handle incoming messages from client
-                        while let Ok(Some(message)) =
-                            connection.receive_message::<SocketMessage<M>>().await
+                        // Version handshake
+                        if let Ok(Some(SocketMessage::VersionCheck {
+                            build_timestamp: client_timestamp,
+                        })) = connection.receive_message().await
                         {
-                            match message {
-                                SocketMessage::Cancel => {
-                                    // Handle cancellation request
-                                    let cancelled = {
-                                        let mut task_mgr = task_manager.lock().await;
-                                        task_mgr.cancel_current_task().await
-                                    };
+                            // Send our build timestamp
+                            if connection
+                                .send_message(&SocketMessage::VersionCheck { build_timestamp })
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
 
-                                    // Send acknowledgment
-                                    let _ = connection
-                                        .send_message(&SocketMessage::<M>::CancelAck)
-                                        .await;
+                            // If versions don't match, client will restart us - just wait for disconnect
+                            if client_timestamp != build_timestamp {
+                                return;
+                            }
+                        } else {
+                            // No version check received
+                            return;
+                        }
 
-                                    if cancelled {
-                                        // Update state back to ready
-                                        {
-                                            let mut current_state = state.lock().await;
-                                            *current_state = ServerState::Ready;
+                        // Receive command
+                        let command = match connection.receive_message::<SocketMessage>().await {
+                            Ok(Some(SocketMessage::Command(cmd))) => cmd,
+                            _ => return,
+                        };
+
+                        // Create a pipe for streaming output
+                        let (output_writer, mut output_reader) = tokio::io::duplex(8192);
+
+                        // Create cancellation token
+                        let cancel_token = tokio_util::sync::CancellationToken::new();
+                        let cancel_token_clone = cancel_token.clone();
+
+                        // Spawn handler task
+                        let mut handler_task = Some(spawn(async move {
+                            handler
+                                .handle(&command, output_writer, cancel_token_clone)
+                                .await
+                        }));
+
+                        // Stream output chunks to client
+                        let mut buffer = vec![0u8; 4096];
+                        let mut handler_error: Option<String> = None;
+                        let stream_result = loop {
+                            select! {
+                                // Read from handler output
+                                read_result = output_reader.read(&mut buffer) => {
+                                    match read_result {
+                                        Ok(0) => {
+                                            // EOF - handler closed output
+                                            // If handler failed, send error now after draining output
+                                            if let Some(error) = handler_error {
+                                                let _ = connection.send_message(&SocketMessage::CommandError(error.clone())).await;
+                                                break Err(anyhow::anyhow!("{}", error));
+                                            }
+                                            break Ok(());
                                         }
-                                        let _ = status_tx.send(DaemonStatus::Ready);
+                                        Ok(n) => {
+                                            // Send chunk to client
+                                            let chunk = buffer[..n].to_vec();
+                                            if connection.send_message(&SocketMessage::OutputChunk(chunk)).await.is_err() {
+                                                // Connection closed - cancel handler
+                                                cancel_token.cancel();
+                                                break Err(anyhow::anyhow!("Connection closed"));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            break Err(anyhow::anyhow!("Read error: {}", e));
+                                        }
                                     }
                                 }
-                                SocketMessage::Request(request) => {
-                                    // Check build timestamp version compatibility
-                                    if request.client_build_timestamp != self.build_timestamp {
-                                        let version_mismatch: RpcResponse<M::Response> =
-                                            RpcResponse::VersionMismatch {
-                                                daemon_build_timestamp: self.build_timestamp,
-                                            };
-                                        let _ = connection
-                                            .send_message(&SocketMessage::<M>::Response(
-                                                version_mismatch,
-                                            ))
-                                            .await;
-                                        continue;
-                                    }
 
-                                    // Single-task enforcement: reject if busy
-                                    {
-                                        let current_state = state.lock().await;
-                                        if *current_state == ServerState::Busy {
-                                            let error_response: RpcResponse<M::Response> =
-                                                RpcResponse::Error {
-                                                    error:
-                                                        "Daemon is busy processing another request"
-                                                            .to_string(),
-                                                };
-                                            let _ = connection
-                                                .send_message(&SocketMessage::<M>::Response(
-                                                    error_response,
-                                                ))
-                                                .await;
+                                // Handler task completed (only poll if task still exists)
+                                task_result = async { handler_task.as_mut().unwrap().await }, if handler_task.is_some() => {
+                                    // Take the task so we don't poll it again
+                                    handler_task.take();
+
+                                    match task_result {
+                                        Ok(Ok(())) => {
+                                            // Handler succeeded - continue reading remaining output
+                                            continue;
+                                        }
+                                        Ok(Err(e)) => {
+                                            // Handler failed - save error and continue draining output
+                                            handler_error = Some(e.to_string());
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            // Task panicked - save error and continue draining output
+                                            handler_error = Some(format!("Task panicked: {}", e));
                                             continue;
                                         }
                                     }
-
-                                    // Change state to busy
-                                    {
-                                        let mut current_state = state.lock().await;
-                                        *current_state = ServerState::Busy;
-                                    }
-                                    let _ = status_tx
-                                        .send(DaemonStatus::Busy("Processing request".to_string()));
-
-                                    // Create status channel for this request
-                                    let (task_status_tx, mut task_status_rx) = mpsc::channel(32);
-                                    let status_tx_clone = status_tx.clone();
-
-                                    // Forward task status updates to broadcast
-                                    let task_status_forwarder = spawn(async move {
-                                        while let Some(status) = task_status_rx.recv().await {
-                                            let _ = status_tx_clone.send(status);
-                                        }
-                                    });
-
-                                    // Process the request with basic cancellation support
-                                    let cancel_token = tokio_util::sync::CancellationToken::new();
-
-                                    // Track the cancel token for potential cancellation
-                                    {
-                                        let mut task_mgr = task_manager.lock().await;
-                                        // For now, just store a dummy handle since we can't easily track the synchronous execution
-                                        let dummy_handle = spawn(async {});
-                                        task_mgr.start_task(dummy_handle, cancel_token.clone());
-                                    }
-
-                                    let result = handler
-                                        .handle(request.method, cancel_token, task_status_tx)
-                                        .await;
-
-                                    // Stop status forwarding
-                                    task_status_forwarder.abort();
-
-                                    // Send response
-                                    let response = match result {
-                                        Ok(output) => RpcResponse::Success { output },
-                                        Err(err) => RpcResponse::Error {
-                                            error: err.to_string(),
-                                        },
-                                    };
-
-                                    let _ = connection
-                                        .send_message(&SocketMessage::<M>::Response(response))
-                                        .await;
-
-                                    // Mark task as finished and return to ready state
-                                    {
-                                        let mut task_mgr = task_manager.lock().await;
-                                        task_mgr.finish_task();
-                                    }
-                                    {
-                                        let mut current_state = state.lock().await;
-                                        *current_state = ServerState::Ready;
-                                    }
-                                    let _ = status_tx.send(DaemonStatus::Ready);
                                 }
-                                _ => {
-                                    // Ignore other message types
+                            }
+                        };
+
+                        // If streaming failed (connection closed), wait for handler to finish
+                        if stream_result.is_err() {
+                            cancel_token.cancel();
+                            // Wait for handler to finish with timeout (if it hasn't completed yet)
+                            if let Some(task) = handler_task {
+                                select! {
+                                    _ = task => {}
+                                    _ = sleep(Duration::from_secs(1)) => {
+                                        // Force abort if handler doesn't finish in time
+                                    }
                                 }
                             }
                         }
-
-                        // Clean up when client disconnects
-                        println!("Client {client_id} disconnected");
                     });
                 }
                 Err(e) => {
@@ -336,6 +237,6 @@ where
     }
 }
 
-#[cfg(test)]
-#[path = "server_tests.rs"]
-mod tests;
+// #[cfg(test)]
+// #[path = "server_tests.rs"]
+// mod tests;

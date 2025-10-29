@@ -1,14 +1,10 @@
 mod common;
 
-use anyhow::bail;
+use anyhow::{Result, bail};
 use common::*;
 use daemon_rpc::prelude::*;
-use std::{
-    env,
-    process::Command,
-    time::{Duration, Instant},
-};
-use tokio::{select, spawn, time::sleep};
+use std::env;
+use tokio::io::{self, AsyncReadExt};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -21,278 +17,77 @@ async fn main() -> Result<()> {
 
     match args[1].as_str() {
         "daemon" => run_daemon_mode().await,
-        "demo" => run_demo_mode().await,
-        "test" => run_test_mode().await,
-        _ => {
-            eprintln!("❌ Unknown mode: {}", args[1]);
-            print_usage();
-            bail!("Invalid mode")
-        }
+        _ => run_client_mode().await,
     }
 }
 
 fn print_usage() {
-    println!("🎯 daemon-rpc All-in-One Example");
-    println!("=================================");
+    println!("daemon-rpc stdin/stdout Example");
+    println!("================================");
     println!("Usage: cargo run --example cli -- <mode> [options]");
     println!();
     println!("Modes:");
-    println!("  daemon     Start daemon server");
-    println!("  demo       Run automated demonstration");
-    println!("  test       Run quick functionality test");
+    println!("  daemon         Start daemon server");
+    println!("  (any other)    Run as client (reads stdin, sends to daemon, outputs to stdout)");
     println!();
     println!("Daemon options:");
     println!("  --daemon-id <id>          Daemon ID (required)");
     println!("  --build-timestamp <time>  Build timestamp (optional)");
-    println!("  --rich                    Enable rich mode with startup delay");
     println!();
     println!("Examples:");
-    println!("  cargo run --example cli -- daemon --daemon-id 1000 --rich");
-    println!("  cargo run --example cli -- demo");
-    println!("  cargo run --example cli -- test");
+    println!("  # Start daemon");
+    println!("  cargo run --example cli -- daemon --daemon-id 1000");
+    println!();
+    println!("  # Execute commands via client");
+    println!("  echo \"status\" | cargo run --example cli");
+    println!("  echo \"process file.txt\" | cargo run --example cli");
+    println!("  echo \"long 5\" | cargo run --example cli");
+    println!();
+    println!("Available commands:");
+    println!("  status              - Get daemon status");
+    println!("  uptime              - Get daemon uptime");
+    println!("  process [file]      - Process a file (simulated)");
+    println!("  long [seconds]      - Long-running task (test cancellation with Ctrl+C)");
+    println!("  echo [message]      - Echo a message");
 }
 
 async fn run_daemon_mode() -> Result<()> {
-    let (daemon_id, build_timestamp, rich_mode) = parse_daemon_args()?;
+    let (daemon_id, build_timestamp) = parse_daemon_args()?;
 
     println!(
-        "🚀 Starting daemon (ID: {}, build: {}, rich: {})",
-        daemon_id, build_timestamp, rich_mode
+        "Starting daemon (ID: {}, build: {})",
+        daemon_id, build_timestamp
     );
 
-    let daemon = DemoDaemon::new(rich_mode);
-    daemon.simulate_startup_delay().await;
-
-    let server = DaemonServer::new(daemon_id, build_timestamp, daemon);
-    server.spawn_with_socket().await?;
+    let handler = CommandProcessor::new();
+    let server = DaemonServer::new(daemon_id, build_timestamp, handler);
+    server.run().await?;
 
     Ok(())
 }
 
-async fn run_demo_mode() -> Result<()> {
-    // Build daemon first
-    println!("🔨 Building daemon...");
-    let _ = Command::new("cargo")
-        .args(["build", "--example", "cli"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output();
+async fn run_client_mode() -> Result<()> {
+    // Read command from stdin
+    let mut stdin = io::stdin();
+    let mut command = String::new();
 
-    println!("🚀 daemon-rpc Framework Demonstration");
-    println!("======================================");
-    println!("All features in one comprehensive demo!\n");
+    stdin.read_to_string(&mut command).await?;
 
-    // Demo 1: Auto-spawn with startup delay
-    println!("📋 Demo 1: Auto-Spawn with Startup Delay");
-    println!("-----------------------------------------");
-    let start_time = Instant::now();
-
-    let mut client: DaemonClient<TestMethod> =
-        DaemonClient::connect(2000, get_daemon_path(), get_build_timestamp()).await?;
-
-    println!(
-        "✅ Connected in {:.2}s (includes 2s daemon startup)",
-        start_time.elapsed().as_secs_f64()
-    );
-
-    // Demo 2: Status streaming
-    println!("\n📊 Demo 2: Real-time Status Streaming");
-    println!("-------------------------------------");
-    spawn(async move {
-        while let Ok(status) = client.status_receiver.recv().await {
-            match status {
-                DaemonStatus::Ready => println!("📊 Status: ✅ Ready"),
-                DaemonStatus::Busy(msg) => println!("📊 Status: 🔄 {}", msg),
-                DaemonStatus::Error(err) => println!("📊 Status: ❌ Error: {}", err),
-            }
-        }
-    });
-
-    let mut demo_client: DaemonClient<TestMethod> =
-        DaemonClient::connect(2000, get_daemon_path(), get_build_timestamp()).await?;
-
-    let result = demo_client
-        .request(TestMethod::ProcessFile {
-            path: "/tmp/large_file.txt".into(),
-            options: ProcessOptions {
-                compress: true,
-                validate: true,
-                backup: false,
-            },
-        })
-        .await?;
-
-    match result {
-        RpcResponse::Success { output } => {
-            println!(
-                "✅ File processing: {} bytes, {} files",
-                output.processed_bytes,
-                output.files_created.len()
-            );
-        }
-        _ => println!("❌ Demo failed"),
+    if command.trim().is_empty() {
+        eprintln!("Error: No command provided via stdin");
+        print_usage();
+        bail!("No command provided");
     }
 
-    // Demo 3: Cancellation
-    println!("\n🛑 Demo 3: Task Cancellation");
-    println!("-----------------------------");
-    demonstrate_cancellation().await?;
-
-    // Demo 4: Multiple clients
-    println!("\n👥 Demo 4: Multiple Client Support");
-    println!("-----------------------------------");
-    demonstrate_multiple_clients().await?;
-
-    println!("\n🎉 All demos complete! Framework features verified:");
-    println!("  ✅ Auto-spawn with startup delay");
-    println!("  ✅ Status streaming");
-    println!("  ✅ Task cancellation");
-    println!("  ✅ Multiple clients");
-    println!("  ✅ Version management");
-
-    Ok(())
-}
-
-async fn demonstrate_cancellation() -> Result<()> {
-    let mut task_client: DaemonClient<TestMethod> =
-        DaemonClient::connect(2000, get_daemon_path(), get_build_timestamp()).await?;
-
-    let mut cancel_client: DaemonClient<TestMethod> =
-        DaemonClient::connect(2000, get_daemon_path(), get_build_timestamp()).await?;
-
-    let task_future = task_client.request(TestMethod::LongTask {
-        duration_seconds: 8,
-        description: "Demo cancellation task".to_string(),
-    });
-
-    let cancel_future = async {
-        sleep(Duration::from_millis(2000)).await;
-        println!("🛑 Sending cancel...");
-        cancel_client.cancel_current_task().await
-    };
-
-    select! {
-        result = task_future => {
-            match result? {
-                RpcResponse::Success { output } => println!("✅ Task completed: {}", output.status),
-                RpcResponse::Error { error } => println!("🛑 Task cancelled: {}", error),
-                _ => println!("⚠️  Unexpected result"),
-            }
-        }
-        cancel_result = cancel_future => {
-            match cancel_result? {
-                true => println!("✅ Cancel sent successfully"),
-                false => println!("⚠️  Cancel failed"),
-            }
-            sleep(Duration::from_millis(500)).await; // Wait for task to respond
-        }
-    }
-
-    Ok(())
-}
-
-async fn demonstrate_multiple_clients() -> Result<()> {
+    // Connect to daemon (auto-spawns if needed)
+    let daemon_id = 1000;
+    let daemon_exe = get_daemon_path();
     let build_timestamp = get_build_timestamp();
-    let mut clients = Vec::new();
 
-    // Connect 3 clients
-    for i in 1..=3 {
-        let client: DaemonClient<TestMethod> =
-            DaemonClient::connect(2000, get_daemon_path(), build_timestamp).await?;
-        clients.push(client);
-        println!("✅ Client {} connected", i);
-    }
+    let mut client = DaemonClient::connect(daemon_id, daemon_exe, build_timestamp).await?;
 
-    // Each client gets uptime
-    for (i, client) in clients.iter_mut().enumerate() {
-        let result = client.request(TestMethod::GetUptime).await?;
-        match result {
-            RpcResponse::Success { output } => {
-                println!("   Client {}: {}", i + 1, output.status);
-            }
-            _ => println!("   Client {}: Error", i + 1),
-        }
-    }
-
-    Ok(())
-}
-
-async fn run_test_mode() -> Result<()> {
-    println!("🧪 Quick Functionality Test");
-    println!("============================");
-
-    // Build daemon
-    let _ = Command::new("cargo")
-        .args(["build", "--example", "cli"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output();
-
-    // Test basic functionality
-    let mut client: DaemonClient<TestMethod> =
-        DaemonClient::connect(3000, get_daemon_path(), get_build_timestamp()).await?;
-
-    // Quick status check
-    let result = client.request(TestMethod::GetStatus).await?;
-    match result {
-        RpcResponse::Success { output } => {
-            println!("✅ Daemon status: {}", output.status);
-        }
-        _ => {
-            println!("❌ Status check failed");
-            bail!("Status check failed");
-        }
-    }
-
-    // Quick task
-    let result = client
-        .request(TestMethod::QuickTask {
-            message: "Test message".to_string(),
-        })
-        .await?;
-
-    match result {
-        RpcResponse::Success { output } => {
-            println!(
-                "✅ Quick task: {} ({}ms)",
-                output.status, output.duration_ms
-            );
-        }
-        _ => {
-            println!("❌ Quick task failed");
-            bail!("Quick task failed");
-        }
-    }
-
-    // Test cancellation
-    println!("🛑 Testing cancellation...");
-    let mut cancel_client: DaemonClient<TestMethod> =
-        DaemonClient::connect(3000, get_daemon_path(), get_build_timestamp()).await?;
-
-    let task_future = client.request(TestMethod::LongTask {
-        duration_seconds: 5,
-        description: "Test task".to_string(),
-    });
-
-    sleep(Duration::from_millis(500)).await;
-
-    let cancelled = cancel_client.cancel_current_task().await?;
-    if cancelled {
-        println!("✅ Cancellation works");
-
-        // Wait for task to respond to cancellation
-        match task_future.await? {
-            RpcResponse::Error { error } if error.contains("cancelled") => {
-                println!("✅ Task properly cancelled");
-            }
-            _ => {
-                println!("⚠️  Task may not have been cancelled");
-            }
-        }
-    } else {
-        println!("⚠️  Cancellation failed");
-    }
-
-    println!("\n🎉 All tests passed! Framework is working correctly.");
-    println!("👋 Test complete. Daemon remains running.");
+    // Execute command and stream output to stdout
+    client.execute_command(command).await?;
 
     Ok(())
 }
