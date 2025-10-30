@@ -11,7 +11,7 @@ use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
 /// # Example
 ///
 /// ```rust
-/// use daemon_rpc::prelude::*;
+/// use daemon_cli::prelude::*;
 /// use std::path::PathBuf;
 ///
 /// let daemon_exe = PathBuf::from("./target/debug/examples/cli");

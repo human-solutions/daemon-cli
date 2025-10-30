@@ -2,7 +2,7 @@ mod common;
 
 use anyhow::{Result, bail};
 use common::*;
-use daemon_rpc::prelude::*;
+use daemon_cli::prelude::*;
 use std::env;
 use tokio::io::{self, AsyncReadExt};
 
@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
 }
 
 fn print_usage() {
-    println!("daemon-rpc stdin/stdout Example");
+    println!("daemon-cli stdin/stdout Example");
     println!("================================");
     println!("Usage: cargo run --example cli -- <mode> [options]");
     println!();

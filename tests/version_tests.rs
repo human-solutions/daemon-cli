@@ -1,5 +1,5 @@
 use anyhow::Result;
-use daemon_rpc::{
+use daemon_cli::{
     prelude::*,
     test_utils::{SocketClient, SocketMessage},
 };

@@ -8,13 +8,13 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 // Internal: Generate socket path for a daemon ID
 pub fn socket_path(daemon_id: u64) -> PathBuf {
     let temp_dir = env::temp_dir();
-    temp_dir.join(format!("daemon-rpc-{daemon_id}.sock"))
+    temp_dir.join(format!("daemon-cli-{daemon_id}.sock"))
 }
 
 // Internal: Generate PID file path for a daemon ID
 pub fn pid_path(daemon_id: u64) -> PathBuf {
     let temp_dir = env::temp_dir();
-    temp_dir.join(format!("daemon-rpc-{daemon_id}.pid"))
+    temp_dir.join(format!("daemon-cli-{daemon_id}.pid"))
 }
 
 // Internal: Serialize a message to bytes

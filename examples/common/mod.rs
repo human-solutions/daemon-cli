@@ -1,5 +1,5 @@
 use anyhow::Result;
-use daemon_rpc::prelude::*;
+use daemon_cli::prelude::*;
 use std::time::Duration;
 use std::{
     env,

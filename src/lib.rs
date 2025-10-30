@@ -1,11 +1,11 @@
-//! # daemon-rpc
+//! # daemon-cli
 //!
 //! A zero-configuration framework for building daemon-based Rust applications
 //! with stdin/stdout streaming.
 //!
 //! ## Overview
 //!
-//! daemon-rpc provides a simple way to build CLI applications that communicate
+//! daemon-cli provides a simple way to build CLI applications that communicate
 //! with background daemon processes through a transparent stdin→stdout pipeline.
 //! The framework handles all daemon spawning, version synchronization, and
 //! lifecycle management automatically.
@@ -24,7 +24,7 @@
 //! ### 1. Implement Command Handler
 //!
 //! ```rust
-//! use daemon_rpc::prelude::*;
+//! use daemon_cli::prelude::*;
 //! use tokio::io::{AsyncWrite, AsyncWriteExt};
 //!
 //! #[derive(Clone)]
@@ -50,7 +50,7 @@
 //! ### 2. Create Daemon Binary
 //!
 //! ```rust,no_run
-//! use daemon_rpc::prelude::*;
+//! use daemon_cli::prelude::*;
 //! # use tokio::io::{AsyncWrite, AsyncWriteExt};
 //! #
 //! # #[derive(Clone)]
@@ -111,9 +111,9 @@ pub use server::{DaemonHandle, DaemonServer};
 #[path = "lib_tests.rs"]
 mod tests;
 
-/// Convenient re-exports for common daemon-rpc types and traits.
+/// Convenient re-exports for common daemon-cli types and traits.
 ///
-/// Use `use daemon_rpc::prelude::*;` to import all commonly needed items.
+/// Use `use daemon_cli::prelude::*;` to import all commonly needed items.
 pub mod prelude {
     pub use crate::{CommandHandler, DaemonClient, DaemonHandle, DaemonServer};
     pub use anyhow::Result;
@@ -137,7 +137,7 @@ pub mod test_utils {
 /// # Example
 ///
 /// ```rust,no_run
-/// use daemon_rpc::prelude::*;
+/// use daemon_cli::prelude::*;
 /// use tokio::io::{AsyncWrite, AsyncWriteExt};
 ///
 /// #[derive(Clone)]

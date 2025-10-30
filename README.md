@@ -1,4 +1,4 @@
-# daemon-rpc
+# daemon-cli
 
 A streaming daemon-client framework for Rust with automatic lifecycle management and stdin/stdout streaming.
 
@@ -13,7 +13,7 @@ A streaming daemon-client framework for Rust with automatic lifecycle management
 
 ```toml
 [dependencies]
-daemon-rpc = "0.2.0"
+daemon-cli = "0.2.0"
 ```
 
 ## Usage
@@ -21,7 +21,7 @@ daemon-rpc = "0.2.0"
 **Implement a handler:**
 
 ```rust
-use daemon_rpc::prelude::*;
+use daemon_cli::prelude::*;
 
 struct MyHandler;
 

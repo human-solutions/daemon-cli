@@ -12,7 +12,7 @@ use tokio::{io::AsyncReadExt, select, spawn, sync::oneshot, time::sleep};
 /// # Example
 ///
 /// ```rust
-/// use daemon_rpc::prelude::*;
+/// use daemon_cli::prelude::*;
 /// use tokio::io::{AsyncWrite, AsyncWriteExt};
 ///
 /// #[derive(Clone)]
@@ -106,7 +106,7 @@ where
     ///
     /// # Behavior
     ///
-    /// - Creates Unix socket at `/tmp/daemon-rpc-{daemon_id}.sock`
+    /// - Creates Unix socket at `/tmp/daemon-cli-{daemon_id}.sock`
     /// - Sets socket permissions to 0600 (owner read/write only)
     /// - Accepts one client connection at a time
     /// - Performs version handshake on connection

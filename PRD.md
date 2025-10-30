@@ -1,4 +1,4 @@
-# Product Requirements Document: daemon-rpc
+# Product Requirements Document: daemon-cli
 
 ## Product Vision
 

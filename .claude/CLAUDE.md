@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`daemon-rpc` is a Rust library for building streaming daemon-client applications with automatic lifecycle management. It enables CLI tools to communicate with long-running background processes via stdin/stdout streaming over Unix domain sockets.
+`daemon-cli` is a Rust library for building streaming daemon-client applications with automatic lifecycle management. It enables CLI tools to communicate with long-running background processes via stdin/stdout streaming over Unix domain sockets.
 
 ## Essential Commands
 
@@ -35,7 +35,7 @@ echo "process file.txt" | cargo run --example cli
 - Auto-detects running daemons via socket existence
 - Performs version handshake using build timestamps
 - Restarts daemon on version mismatch
-- Uses PID files (`/tmp/daemon-rpc-{id}.pid`) for process cleanup
+- Uses PID files (`/tmp/daemon-cli-{id}.pid`) for process cleanup
 
 **Server (`src/server.rs`)**
 - `DaemonServer` - Background daemon that processes commands
@@ -46,7 +46,7 @@ echo "process file.txt" | cargo run --example cli
 - Cancellation via `CancellationToken` when connection closes
 
 **Transport (`src/transport.rs`)**
-- Unix domain sockets at `/tmp/daemon-rpc-{daemon_id}.sock`
+- Unix domain sockets at `/tmp/daemon-cli-{daemon_id}.sock`
 - Length-delimited framing using tokio-util codec
 - Message types: `VersionCheck`, `Command`, `OutputChunk`, `CommandError`
 - Socket permissions: 0600 (owner only)
