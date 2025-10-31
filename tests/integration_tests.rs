@@ -475,19 +475,33 @@ async fn test_connection_limit() -> Result<()> {
 
     // Wait for all clients to complete
     let mut success_count = 0;
+    let mut rejected_count = 0;
     for handle in client_handles {
         let result = handle.await;
         assert!(result.is_ok(), "Client task panicked");
-        if result.unwrap().is_ok() {
-            success_count += 1;
+        match result.unwrap() {
+            Ok(_) => success_count += 1,
+            Err(e) => {
+                // When server is at capacity, connection is dropped which causes various errors
+                // (connection reset, unexpected close, invalid handshake, etc.)
+                rejected_count += 1;
+                println!("Client rejected with error: {}", e);
+            }
         }
     }
 
-    // All clients should succeed eventually (they just wait for a permit)
-    assert_eq!(
-        success_count, num_clients,
-        "Expected {} successful executions, got {}",
-        num_clients, success_count
+    // With non-blocking semaphore, connections are rejected when at capacity
+    // So we expect some clients to succeed (up to the limit) and some to be rejected
+    assert!(
+        success_count <= 3,
+        "Expected at most 3 successful executions, got {}",
+        success_count
+    );
+    assert!(
+        success_count + rejected_count == num_clients,
+        "Expected {} total clients (success + rejected), got {}",
+        num_clients,
+        success_count + rejected_count
     );
 
     // Verify that we respected the connection limit
@@ -499,8 +513,8 @@ async fn test_connection_limit() -> Result<()> {
     );
 
     println!(
-        "Connection limit test: {} clients, max {} concurrent (limit was 3)",
-        num_clients, max_concurrent
+        "Connection limit test: {} clients, {} succeeded, {} rejected, max {} concurrent (limit was 3)",
+        num_clients, success_count, rejected_count, max_concurrent
     );
 
     // Cleanup

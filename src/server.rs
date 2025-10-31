@@ -222,21 +222,27 @@ where
 
             match accept_result {
                 Some(Ok(mut connection)) => {
-                    // Clone values needed for the task before acquiring semaphore
-                    let handler = self.handler.clone();
-                    let build_timestamp = self.build_timestamp;
-                    let client_id = CLIENT_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-                    // Acquire connection permit BEFORE spawning (blocks if at max capacity)
-                    // This prevents accepting more connections than we can handle
-                    // Use acquire_owned() to get a permit that owns the semaphore Arc
-                    let permit = match self.connection_semaphore.clone().acquire_owned().await {
+                    // Try to acquire connection permit immediately (non-blocking)
+                    // This prevents holding file descriptors while waiting for capacity
+                    let permit = match self.connection_semaphore.clone().try_acquire_owned() {
                         Ok(permit) => permit,
-                        Err(_) => {
+                        Err(tokio::sync::TryAcquireError::NoPermits) => {
+                            // No permits available - drop connection immediately
+                            tracing::warn!("Connection limit reached, rejecting new connection");
+                            // Connection is dropped here, freeing the file descriptor
+                            // Client will receive connection closed/reset and can retry
+                            continue;
+                        }
+                        Err(tokio::sync::TryAcquireError::Closed) => {
                             tracing::error!("Semaphore closed, shutting down");
                             break;
                         }
                     };
+
+                    // Clone values needed for the task after we have a permit
+                    let handler = self.handler.clone();
+                    let build_timestamp = self.build_timestamp;
+                    let client_id = CLIENT_COUNTER.fetch_add(1, Ordering::Relaxed);
 
                     // Handle this client connection
                     spawn(async move {
