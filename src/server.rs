@@ -1,8 +1,18 @@
 use crate::transport::{SocketMessage, SocketServer};
 use crate::*;
 use anyhow::Result;
-use std::{fs, process, sync::Arc, time::Duration};
+use std::{
+    fs, process,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::{io::AsyncReadExt, select, spawn, sync::{oneshot, Semaphore}, time::sleep};
+
+/// Global client connection counter for logging context
+static CLIENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Daemon server that processes commands from CLI clients.
 ///
@@ -184,7 +194,7 @@ where
         let pid = process::id();
         let pid_file = crate::transport::pid_path(self.daemon_id);
         if let Err(e) = fs::write(&pid_file, pid.to_string()) {
-            eprintln!("Warning: Failed to write PID file: {}", e);
+            tracing::warn!(pid_file = ?pid_file, error = %e, "Failed to write PID file");
         }
 
         // Ensure PID file cleanup on exit
@@ -193,10 +203,11 @@ where
             let _ = fs::remove_file(&cleanup_pid_file);
         });
 
-        println!(
-            "Daemon {} listening on socket: {:?}",
-            self.daemon_id,
-            socket_server.socket_path()
+        tracing::info!(
+            daemon_id = self.daemon_id,
+            socket_path = ?socket_server.socket_path(),
+            build_timestamp = self.build_timestamp,
+            "Daemon started and listening"
         );
 
         loop {
@@ -204,7 +215,7 @@ where
             let accept_result = select! {
                 result = socket_server.accept() => Some(result),
                 _ = &mut self.shutdown_rx => {
-                    println!("Daemon {} received shutdown signal", self.daemon_id);
+                    tracing::info!(daemon_id = self.daemon_id, "Daemon received shutdown signal");
                     break;
                 }
             };
@@ -214,9 +225,16 @@ where
                     let handler = self.handler.clone();
                     let build_timestamp = self.build_timestamp;
                     let semaphore = self.connection_semaphore.clone();
+                    let client_id = CLIENT_COUNTER.fetch_add(1, Ordering::Relaxed);
 
                     // Handle this client connection
                     spawn(async move {
+                        // Create span for this client connection
+                        let client_span = tracing::info_span!("client", id = client_id);
+                        let _client_guard = client_span.enter();
+
+                        tracing::debug!("Connection accepted");
+
                         // Acquire connection permit (blocks if at max capacity)
                         let _permit = semaphore.acquire().await.expect("Semaphore closed");
                         // Permit is automatically released when _permit is dropped
@@ -231,23 +249,37 @@ where
                                 .await
                                 .is_err()
                             {
+                                tracing::debug!("Failed to send version check response");
                                 return;
                             }
 
                             // If versions don't match, client will restart us - just wait for disconnect
                             if client_timestamp != build_timestamp {
+                                tracing::info!(
+                                    client_version = client_timestamp,
+                                    server_version = build_timestamp,
+                                    "Version mismatch detected, client will restart daemon"
+                                );
                                 return;
                             }
+
+                            tracing::debug!("Version handshake successful");
                         } else {
                             // No version check received
+                            tracing::warn!("No version check received from client");
                             return;
                         }
 
                         // Receive command
                         let command = match connection.receive_message::<SocketMessage>().await {
                             Ok(Some(SocketMessage::Command(cmd))) => cmd,
-                            _ => return,
+                            _ => {
+                                tracing::warn!("No command received from client");
+                                return;
+                            }
                         };
+
+                        tracing::debug!("Received command");
 
                         // Create a pipe for streaming output
                         let (output_writer, mut output_reader) = tokio::io::duplex(8192);
@@ -289,10 +321,12 @@ where
                                             // EOF - handler closed output
                                             // Send completion message (error or success)
                                             let result = if let Some(ref error) = handler_error {
+                                                tracing::error!(error = %error, "Handler failed");
                                                 let _ = connection.send_message(&SocketMessage::CommandError(error.clone())).await;
                                                 let _ = connection.flush().await;
                                                 Err(anyhow::anyhow!("{}", error))
                                             } else {
+                                                tracing::debug!("Handler completed successfully");
                                                 let _ = connection.send_message(&SocketMessage::CommandComplete).await;
                                                 let _ = connection.flush().await;
                                                 Ok(())
@@ -309,6 +343,7 @@ where
                                             let chunk = buffer[..n].to_vec();
                                             if connection.send_message(&SocketMessage::OutputChunk(chunk)).await.is_err() {
                                                 // Connection closed - cancel handler
+                                                tracing::warn!("Connection closed by client");
                                                 cancel_token.cancel();
                                                 break Err(anyhow::anyhow!("Connection closed"));
                                             }
@@ -360,7 +395,7 @@ where
                     });
                 }
                 Some(Err(e)) => {
-                    eprintln!("Failed to accept connection: {e}");
+                    tracing::error!(error = %e, "Failed to accept connection");
                     break;
                 }
                 None => {

@@ -101,10 +101,12 @@ use tokio::io::AsyncWrite;
 use tokio_util::sync::CancellationToken;
 
 mod client;
+mod error_context;
 mod server;
 mod transport;
 
 pub use client::DaemonClient;
+pub use error_context::ErrorContextBuffer;
 pub use server::{DaemonHandle, DaemonServer};
 
 #[cfg(test)]
@@ -115,7 +117,7 @@ mod tests;
 ///
 /// Use `use daemon_cli::prelude::*;` to import all commonly needed items.
 pub mod prelude {
-    pub use crate::{CommandHandler, DaemonClient, DaemonHandle, DaemonServer};
+    pub use crate::{CommandHandler, DaemonClient, DaemonHandle, DaemonServer, ErrorContextBuffer};
     pub use anyhow::Result;
     pub use async_trait::async_trait;
     pub use tokio_util::sync::CancellationToken;

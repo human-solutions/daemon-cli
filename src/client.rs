@@ -1,7 +1,9 @@
+use crate::error_context::{ErrorContextBuffer, ErrorContextLayer};
 use crate::transport::{SocketClient, SocketMessage, socket_path};
 use anyhow::{Result, bail};
 use std::{fs, path::PathBuf, process::Stdio, time::Duration};
 use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Client for communicating with daemon processes via Unix sockets.
 ///
@@ -36,6 +38,8 @@ pub struct DaemonClient {
     pub daemon_executable: PathBuf,
     /// Build timestamp for version compatibility checking
     pub build_timestamp: u64,
+    /// Error context buffer for client-side logging
+    error_context: ErrorContextBuffer,
 }
 
 impl DaemonClient {
@@ -48,17 +52,32 @@ impl DaemonClient {
         daemon_executable: PathBuf,
         build_timestamp: u64,
     ) -> Result<Self> {
+        // Initialize error context buffer and tracing for client-side logging
+        let error_context = ErrorContextBuffer::new();
+        let error_layer = ErrorContextLayer::new(error_context.clone());
+
+        // Set up tracing subscriber (only if not already initialized)
+        let _ = tracing_subscriber::registry()
+            .with(error_layer)
+            .try_init();
+
+        tracing::debug!(daemon_id, "Connecting to daemon");
+
         // Try to connect to existing daemon first
         let socket_path = socket_path(daemon_id);
 
         let mut socket_client = if let Ok(existing_client) = SocketClient::connect(daemon_id).await
         {
             // Daemon is already running and responsive - use it
+            tracing::debug!("Connected to existing daemon");
             existing_client
         } else {
             // Daemon not running or not responsive - spawn our own
+            tracing::debug!("No existing daemon found, spawning new daemon");
+
             if socket_path.exists() {
                 // Clean up stale socket file
+                tracing::debug!("Cleaning up stale socket file");
                 let _ = fs::remove_file(&socket_path);
             }
 
@@ -66,7 +85,13 @@ impl DaemonClient {
             Self::cleanup_stale_processes(daemon_id).await;
 
             // Spawn new daemon
-            Self::spawn_and_wait_for_ready(daemon_id, &daemon_executable, build_timestamp).await?
+            match Self::spawn_and_wait_for_ready(daemon_id, &daemon_executable, build_timestamp).await {
+                Ok(client) => client,
+                Err(e) => {
+                    error_context.dump_to_stderr();
+                    return Err(e);
+                }
+            }
         };
 
         // Perform version handshake
@@ -84,9 +109,10 @@ impl DaemonClient {
 
         // If versions don't match, restart daemon
         if daemon_timestamp != build_timestamp {
-            println!(
-                "Version mismatch detected: client={}, daemon={}. Restarting daemon...",
-                build_timestamp, daemon_timestamp
+            tracing::info!(
+                client_version = build_timestamp,
+                daemon_version = daemon_timestamp,
+                "Version mismatch detected, restarting daemon"
             );
 
             // Clean up and restart
@@ -94,9 +120,13 @@ impl DaemonClient {
             Self::cleanup_stale_processes(daemon_id).await;
 
             // Spawn new daemon with correct version
-            socket_client =
-                Self::spawn_and_wait_for_ready(daemon_id, &daemon_executable, build_timestamp)
-                    .await?;
+            socket_client = match Self::spawn_and_wait_for_ready(daemon_id, &daemon_executable, build_timestamp).await {
+                Ok(client) => client,
+                Err(e) => {
+                    error_context.dump_to_stderr();
+                    return Err(e);
+                }
+            };
 
             // Retry handshake
             socket_client
@@ -105,16 +135,26 @@ impl DaemonClient {
             match socket_client.receive_message().await? {
                 Some(SocketMessage::VersionCheck {
                     build_timestamp: daemon_ts,
-                }) if daemon_ts == build_timestamp => {}
-                _ => bail!("Version handshake failed after restart"),
+                }) if daemon_ts == build_timestamp => {
+                    tracing::debug!("Version handshake successful after restart");
+                }
+                _ => {
+                    error_context.dump_to_stderr();
+                    bail!("Version handshake failed after restart");
+                }
             }
+        } else {
+            tracing::debug!("Version handshake successful");
         }
+
+        tracing::debug!("Successfully connected to daemon");
 
         Ok(Self {
             socket_client,
             daemon_id,
             daemon_executable,
             build_timestamp,
+            error_context,
         })
     }
 
@@ -123,20 +163,29 @@ impl DaemonClient {
         daemon_executable: &PathBuf,
         build_timestamp: u64,
     ) -> Result<SocketClient> {
+        tracing::debug!(daemon_exe = ?daemon_executable, "Spawning daemon");
+
         // Retry daemon spawning to handle race conditions with concurrent test cleanup
         for retry_attempt in 0..3 {
             let result =
                 Self::try_spawn_daemon(daemon_id, daemon_executable, build_timestamp).await;
 
             match result {
-                Ok(client) => return Ok(client),
+                Ok(client) => {
+                    tracing::debug!("Daemon spawned successfully");
+                    return Ok(client);
+                }
                 Err(e) if e.to_string().contains("signal: 15") && retry_attempt < 2 => {
                     // Daemon was killed during startup, likely by concurrent test cleanup
                     // Wait a bit and retry
+                    tracing::debug!(retry = retry_attempt + 1, "Daemon killed during startup, retrying");
                     sleep(Duration::from_millis(300)).await;
                     continue;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to spawn daemon");
+                    return Err(e);
+                }
             }
         }
 
@@ -149,6 +198,7 @@ impl DaemonClient {
         build_timestamp: u64,
     ) -> Result<SocketClient> {
         // Spawn daemon process (detached - it will manage its own lifecycle)
+        tracing::debug!("Starting daemon process");
         let mut child = Command::new(daemon_executable)
             .arg("daemon")
             .arg("--daemon-id")
@@ -166,11 +216,14 @@ impl DaemonClient {
         let mut attempts = 0;
         const MAX_ATTEMPTS: u32 = 50; // 5 seconds total
 
+        tracing::debug!("Waiting for daemon to become ready");
+
         loop {
             attempts += 1;
 
             // Check if process crashed during startup
             if let Ok(Some(exit_status)) = child.try_wait() {
+                tracing::error!(exit_status = %exit_status, "Daemon process exited during startup");
                 bail!(
                     "Daemon process exited during startup with status: {}",
                     exit_status
@@ -182,12 +235,14 @@ impl DaemonClient {
                 && let Ok(socket_client) = SocketClient::connect(daemon_id).await
             {
                 // Successfully connected - daemon is ready
+                tracing::debug!("Daemon ready and accepting connections");
                 return Ok(socket_client);
             }
 
             if attempts >= MAX_ATTEMPTS {
                 // Kill the startup process if it's still running
                 let _ = child.kill().await;
+                tracing::error!("Daemon failed to start within timeout");
                 bail!("Daemon failed to start within timeout");
             }
 
@@ -202,6 +257,7 @@ impl DaemonClient {
             && let Ok(pid_str) = fs::read_to_string(&pid_file)
             && let Ok(pid) = pid_str.trim().parse::<u32>()
         {
+            tracing::debug!(pid, "Cleaning up stale daemon process");
             let _ = Command::new("kill").arg(pid.to_string()).output().await;
         }
         // Remove stale PID file
@@ -215,10 +271,16 @@ impl DaemonClient {
     /// Streams output chunks as they arrive. Errors written to stderr.
     /// Ctrl+C cancels via connection close.
     pub async fn execute_command(&mut self, command: String) -> Result<()> {
+        tracing::debug!(command = %command, "Executing command");
+
         // Send command
         self.socket_client
             .send_message(&SocketMessage::Command(command))
-            .await?;
+            .await
+            .map_err(|e| {
+                self.error_context.dump_to_stderr();
+                e
+            })?;
 
         // Stream output chunks to stdout
         let mut stdout = tokio::io::stdout();
@@ -227,29 +289,39 @@ impl DaemonClient {
             match self
                 .socket_client
                 .receive_message::<SocketMessage>()
-                .await?
+                .await
             {
-                Some(SocketMessage::OutputChunk(chunk)) => {
+                Ok(Some(SocketMessage::OutputChunk(chunk))) => {
                     // Write chunk to stdout
                     stdout.write_all(&chunk).await?;
                     stdout.flush().await?;
                 }
-                Some(SocketMessage::CommandComplete) => {
+                Ok(Some(SocketMessage::CommandComplete)) => {
                     // Command completed successfully
+                    tracing::debug!("Command completed successfully");
                     return Ok(());
                 }
-                Some(SocketMessage::CommandError(error)) => {
+                Ok(Some(SocketMessage::CommandError(error))) => {
                     // Write error to stderr
                     eprintln!("Error: {}", error);
                     return Err(anyhow::anyhow!("Command failed: {}", error));
                 }
-                None => {
+                Ok(None) => {
                     // Connection closed unexpectedly
+                    tracing::error!("Connection closed unexpectedly");
+                    self.error_context.dump_to_stderr();
                     return Err(anyhow::anyhow!("Connection closed unexpectedly"));
                 }
-                _ => {
+                Ok(_) => {
                     // Unexpected message type
+                    tracing::error!("Unexpected message from daemon");
+                    self.error_context.dump_to_stderr();
                     bail!("Unexpected message from daemon");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to receive message from daemon");
+                    self.error_context.dump_to_stderr();
+                    return Err(e);
                 }
             }
         }
