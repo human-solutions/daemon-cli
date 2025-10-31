@@ -1,12 +1,12 @@
 use crate::transport::{SocketMessage, SocketServer};
 use crate::*;
 use anyhow::Result;
-use std::{fs, process, time::Duration};
-use tokio::{io::AsyncReadExt, select, spawn, sync::oneshot, time::sleep};
+use std::{fs, process, sync::Arc, time::Duration};
+use tokio::{io::AsyncReadExt, select, spawn, sync::{oneshot, Semaphore}, time::sleep};
 
 /// Daemon server that processes commands from CLI clients.
 ///
-/// Handles one command at a time with streaming output,
+/// Handles multiple concurrent clients with streaming output,
 /// cancellation support, and version checking.
 ///
 /// # Example
@@ -44,6 +44,7 @@ pub struct DaemonServer<H> {
     pub build_timestamp: u64,
     handler: H,
     shutdown_rx: oneshot::Receiver<()>,
+    connection_semaphore: Arc<Semaphore>,
 }
 
 /// Handle for controlling a running daemon server.
@@ -68,7 +69,7 @@ impl<H> DaemonServer<H>
 where
     H: CommandHandler + Clone + 'static,
 {
-    /// Create a new daemon server instance.
+    /// Create a new daemon server instance with default connection limit (100).
     ///
     /// Returns the server and a handle that can be used to shut it down gracefully.
     ///
@@ -84,12 +85,67 @@ where
     /// to gracefully stop the server, or drop it to let the server run indefinitely.
     ///
     pub fn new(daemon_id: u64, build_timestamp: u64, handler: H) -> (Self, DaemonHandle) {
+        Self::new_with_limit(daemon_id, build_timestamp, handler, 100)
+    }
+
+    /// Create a new daemon server instance with custom connection limit.
+    ///
+    /// Returns the server and a handle that can be used to shut it down gracefully.
+    ///
+    /// # Parameters
+    ///
+    /// * `daemon_id` - Unique identifier for this daemon instance
+    /// * `build_timestamp` - Build timestamp for version compatibility checking
+    /// * `handler` - Your command handler implementation
+    /// * `max_connections` - Maximum number of concurrent client connections
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (DaemonServer, DaemonHandle). Call `shutdown()` on the handle
+    /// to gracefully stop the server, or drop it to let the server run indefinitely.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use daemon_cli::prelude::*;
+    /// # use tokio::io::{AsyncWrite, AsyncWriteExt};
+    /// #
+    /// # #[derive(Clone)]
+    /// # struct MyHandler;
+    /// #
+    /// # #[async_trait]
+    /// # impl CommandHandler for MyHandler {
+    /// #     async fn handle(
+    /// #         &self,
+    /// #         command: &str,
+    /// #         mut output: impl AsyncWrite + Send + Unpin,
+    /// #         _cancel_token: CancellationToken,
+    /// #     ) -> Result<()> {
+    /// #         output.write_all(command.as_bytes()).await?;
+    /// #         Ok(())
+    /// #     }
+    /// # }
+    ///
+    /// let handler = MyHandler;
+    /// let (server, _handle) = DaemonServer::new_with_limit(1000, 1234567890, handler, 10);
+    /// ```
+    pub fn new_with_limit(
+        daemon_id: u64,
+        build_timestamp: u64,
+        handler: H,
+        max_connections: usize,
+    ) -> (Self, DaemonHandle) {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        // Create semaphore for connection limiting
+        let connection_semaphore = Arc::new(Semaphore::new(max_connections));
+
         let server = Self {
             daemon_id,
             build_timestamp,
             handler,
             shutdown_rx,
+            connection_semaphore,
         };
         let handle = DaemonHandle { shutdown_tx };
         (server, handle)
@@ -108,11 +164,19 @@ where
     ///
     /// - Creates Unix socket at `/tmp/daemon-cli-{daemon_id}.sock`
     /// - Sets socket permissions to 0600 (owner read/write only)
-    /// - Accepts one client connection at a time
-    /// - Performs version handshake on connection
+    /// - Accepts multiple concurrent client connections
+    /// - Each client handled in separate tokio task
+    /// - Performs version handshake on each connection
     /// - Streams output as it's generated
     /// - Handles task cancellation via connection close detection
     /// - Shuts down gracefully if shutdown signal is received
+    ///
+    /// # Concurrency
+    ///
+    /// The server spawns a separate task for each client connection, allowing
+    /// multiple clients to execute commands concurrently. Handlers must be
+    /// thread-safe if they access shared mutable state (use Arc<Mutex<T>> or
+    /// similar synchronization primitives).
     pub async fn run(mut self) -> Result<()> {
         let mut socket_server = SocketServer::new(self.daemon_id).await?;
 
@@ -149,9 +213,13 @@ where
                 Some(Ok(mut connection)) => {
                     let handler = self.handler.clone();
                     let build_timestamp = self.build_timestamp;
+                    let semaphore = self.connection_semaphore.clone();
 
                     // Handle this client connection
                     spawn(async move {
+                        // Acquire connection permit (blocks if at max capacity)
+                        let _permit = semaphore.acquire().await.expect("Semaphore closed");
+                        // Permit is automatically released when _permit is dropped
                         // Version handshake
                         if let Ok(Some(SocketMessage::VersionCheck {
                             build_timestamp: client_timestamp,

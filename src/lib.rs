@@ -17,7 +17,7 @@
 //! - **Transparent Operation**: CLI acts as pure pipe (stdin → daemon → stdout)
 //! - **Task Cancellation**: Graceful cancellation via Ctrl+C
 //! - **Version Management**: Automatic daemon restart on version mismatch
-//! - **Single-Task Processing**: One command at a time for predictability
+//! - **Concurrent Processing**: Multiple clients can execute commands simultaneously (default limit: 100)
 //!
 //! ## Quick Start
 //!
@@ -134,6 +134,17 @@ pub mod test_utils {
 /// Implement this trait on your daemon struct to define how commands
 /// are processed and output is streamed back to the client.
 ///
+/// # Concurrency
+///
+/// Handlers may be invoked concurrently for multiple client connections.
+/// The daemon clones your handler (via `Clone`) for each connection and
+/// spawns a separate task to handle it. If your handler accesses shared
+/// mutable state, use synchronization primitives like `Arc<Mutex<T>>` or
+/// message-passing channels.
+///
+/// For serial execution of commands, implement queuing/routing logic within
+/// your handler using channels or a task queue.
+///
 /// # Example
 ///
 /// ```rust,no_run
@@ -181,6 +192,9 @@ pub mod test_utils {
 #[async_trait]
 pub trait CommandHandler: Send + Sync {
     /// Process a command with streaming output and cancellation support.
+    ///
+    /// This method may be called concurrently from multiple tasks. Ensure
+    /// your implementation is thread-safe if accessing shared state.
     ///
     /// Write output incrementally via `output`. Long-running operations should
     /// check `cancel_token.is_cancelled()` to handle graceful cancellation.
