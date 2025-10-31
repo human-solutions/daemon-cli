@@ -222,22 +222,33 @@ where
 
             match accept_result {
                 Some(Ok(mut connection)) => {
+                    // Clone values needed for the task before acquiring semaphore
                     let handler = self.handler.clone();
                     let build_timestamp = self.build_timestamp;
-                    let semaphore = self.connection_semaphore.clone();
                     let client_id = CLIENT_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+                    // Acquire connection permit BEFORE spawning (blocks if at max capacity)
+                    // This prevents accepting more connections than we can handle
+                    // Use acquire_owned() to get a permit that owns the semaphore Arc
+                    let permit = match self.connection_semaphore.clone().acquire_owned().await {
+                        Ok(permit) => permit,
+                        Err(_) => {
+                            tracing::error!("Semaphore closed, shutting down");
+                            break;
+                        }
+                    };
 
                     // Handle this client connection
                     spawn(async move {
+                        // Permit is held for the lifetime of this task and released when dropped
+                        let _permit = permit;
+
                         // Create span for this client connection
                         let client_span = tracing::info_span!("client", id = client_id);
                         let _client_guard = client_span.enter();
 
                         tracing::debug!("Connection accepted");
 
-                        // Acquire connection permit (blocks if at max capacity)
-                        let _permit = semaphore.acquire().await.expect("Semaphore closed");
-                        // Permit is automatically released when _permit is dropped
                         // Version handshake
                         if let Ok(Some(SocketMessage::VersionCheck {
                             build_timestamp: client_timestamp,
