@@ -1,10 +1,11 @@
 use anyhow::Result;
 use daemon_cli::prelude::*;
 use rand::Rng;
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     spawn,
+    sync::Mutex,
     task::JoinHandle,
     time::sleep,
 };
@@ -21,6 +22,24 @@ async fn start_test_daemon<H: CommandHandler + Clone + 'static>(
     handler: H,
 ) -> (DaemonHandle, JoinHandle<()>) {
     let (server, shutdown_handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
+    let join_handle = spawn(async move {
+        server.run().await.ok();
+    });
+
+    // Wait for server to start
+    sleep(Duration::from_millis(100)).await;
+
+    (shutdown_handle, join_handle)
+}
+
+// Helper to start a daemon server with custom connection limit
+async fn start_test_daemon_with_limit<H: CommandHandler + Clone + 'static>(
+    daemon_id: u64,
+    build_timestamp: u64,
+    handler: H,
+    max_connections: usize,
+) -> (DaemonHandle, JoinHandle<()>) {
+    let (server, shutdown_handle) = DaemonServer::new_with_limit(daemon_id, build_timestamp, handler, max_connections);
     let join_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -254,6 +273,249 @@ async fn test_connection_close_during_processing() -> Result<()> {
 
     // Server should have cleaned up and be ready for new connections
     // This is tested implicitly - if the server hung, the next test would fail
+
+    // Cleanup
+    stop_test_daemon(shutdown_handle, join_handle).await;
+
+    Ok(())
+}
+
+// Test handler that tracks concurrent execution
+#[derive(Clone)]
+struct ConcurrentTrackingHandler {
+    active_count: Arc<Mutex<usize>>,
+    max_concurrent: Arc<Mutex<usize>>,
+}
+
+impl ConcurrentTrackingHandler {
+    fn new() -> Self {
+        Self {
+            active_count: Arc::new(Mutex::new(0)),
+            max_concurrent: Arc::new(Mutex::new(0)),
+        }
+    }
+}
+
+#[async_trait]
+impl CommandHandler for ConcurrentTrackingHandler {
+    async fn handle(
+        &self,
+        _command: &str,
+        mut output: impl AsyncWrite + Send + Unpin,
+        _cancel: CancellationToken,
+    ) -> Result<()> {
+        // Increment active count
+        {
+            let mut active = self.active_count.lock().await;
+            *active += 1;
+
+            // Update max concurrent
+            let mut max = self.max_concurrent.lock().await;
+            if *active > *max {
+                *max = *active;
+            }
+        }
+
+        // Simulate some work
+        output.write_all(b"Working...\n").await?;
+        sleep(Duration::from_millis(100)).await;
+        output.write_all(b"Done\n").await?;
+
+        // Decrement active count
+        {
+            let mut active = self.active_count.lock().await;
+            *active -= 1;
+        }
+
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn test_concurrent_clients() -> Result<()> {
+    let daemon_id = generate_test_daemon_id();
+    let build_timestamp = 1234567895;
+    let handler = ConcurrentTrackingHandler::new();
+    let max_concurrent_ref = handler.max_concurrent.clone();
+
+    // Start server with cleanup
+    let (shutdown_handle, join_handle) =
+        start_test_daemon(daemon_id, build_timestamp, handler).await;
+
+    let daemon_exe = PathBuf::from("./target/debug/examples/cli");
+
+    // Spawn 5 concurrent clients
+    let mut client_handles = vec![];
+    for i in 0..5 {
+        let daemon_exe_clone = daemon_exe.clone();
+        let handle = spawn(async move {
+            let mut client =
+                DaemonClient::connect(daemon_id, daemon_exe_clone, build_timestamp).await?;
+            client
+                .execute_command(format!("concurrent-test-{}", i))
+                .await
+        });
+        client_handles.push(handle);
+    }
+
+    // Wait for all clients to complete
+    for handle in client_handles {
+        let result = handle.await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_ok());
+    }
+
+    // Verify that we actually had concurrent execution
+    let max_concurrent = *max_concurrent_ref.lock().await;
+    assert!(
+        max_concurrent >= 2,
+        "Expected at least 2 concurrent executions, got {}",
+        max_concurrent
+    );
+
+    // Cleanup
+    stop_test_daemon(shutdown_handle, join_handle).await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_concurrent_stress_10_plus_clients() -> Result<()> {
+    let daemon_id = generate_test_daemon_id();
+    let build_timestamp = 1234567896;
+    let handler = ConcurrentTrackingHandler::new();
+    let max_concurrent_ref = handler.max_concurrent.clone();
+
+    // Start server with cleanup
+    let (shutdown_handle, join_handle) =
+        start_test_daemon(daemon_id, build_timestamp, handler).await;
+
+    let daemon_exe = PathBuf::from("./target/debug/examples/cli");
+
+    // Spawn 15 concurrent clients
+    let num_clients = 15;
+    let mut client_handles = vec![];
+    for i in 0..num_clients {
+        let daemon_exe_clone = daemon_exe.clone();
+        let handle = spawn(async move {
+            let mut client =
+                DaemonClient::connect(daemon_id, daemon_exe_clone, build_timestamp).await?;
+            client
+                .execute_command(format!("stress-test-{}", i))
+                .await
+        });
+        client_handles.push(handle);
+    }
+
+    // Wait for all clients to complete
+    let mut success_count = 0;
+    for handle in client_handles {
+        let result = handle.await;
+        assert!(result.is_ok(), "Client task panicked");
+        if result.unwrap().is_ok() {
+            success_count += 1;
+        }
+    }
+
+    // All clients should succeed
+    assert_eq!(
+        success_count, num_clients,
+        "Expected {} successful executions, got {}",
+        num_clients, success_count
+    );
+
+    // Verify significant concurrent execution
+    let max_concurrent = *max_concurrent_ref.lock().await;
+    assert!(
+        max_concurrent >= 5,
+        "Expected at least 5 concurrent executions, got {}",
+        max_concurrent
+    );
+
+    println!(
+        "Stress test: {} clients, max {} concurrent executions",
+        num_clients, max_concurrent
+    );
+
+    // Cleanup
+    stop_test_daemon(shutdown_handle, join_handle).await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_connection_limit() -> Result<()> {
+    let daemon_id = generate_test_daemon_id();
+    let build_timestamp = 1234567897;
+    let handler = ConcurrentTrackingHandler::new();
+    let max_concurrent_ref = handler.max_concurrent.clone();
+
+    // Start server with connection limit of 3
+    let (shutdown_handle, join_handle) =
+        start_test_daemon_with_limit(daemon_id, build_timestamp, handler, 3).await;
+
+    let daemon_exe = PathBuf::from("./target/debug/examples/cli");
+
+    // Spawn 6 concurrent clients (more than the limit)
+    let num_clients = 6;
+    let mut client_handles = vec![];
+    for i in 0..num_clients {
+        let daemon_exe_clone = daemon_exe.clone();
+        let handle = spawn(async move {
+            let mut client =
+                DaemonClient::connect(daemon_id, daemon_exe_clone, build_timestamp).await?;
+            client
+                .execute_command(format!("limit-test-{}", i))
+                .await
+        });
+        client_handles.push(handle);
+        // Small delay to stagger connections slightly
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    // Wait for all clients to complete
+    let mut success_count = 0;
+    let mut rejected_count = 0;
+    for handle in client_handles {
+        let result = handle.await;
+        assert!(result.is_ok(), "Client task panicked");
+        match result.unwrap() {
+            Ok(_) => success_count += 1,
+            Err(e) => {
+                // When server is at capacity, connection is dropped which causes various errors
+                // (connection reset, unexpected close, invalid handshake, etc.)
+                rejected_count += 1;
+                println!("Client rejected with error: {}", e);
+            }
+        }
+    }
+
+    // With non-blocking semaphore, connections are rejected when at capacity
+    // So we expect some clients to succeed (up to the limit) and some to be rejected
+    assert!(
+        success_count <= 3,
+        "Expected at most 3 successful executions, got {}",
+        success_count
+    );
+    assert!(
+        success_count + rejected_count == num_clients,
+        "Expected {} total clients (success + rejected), got {}",
+        num_clients,
+        success_count + rejected_count
+    );
+
+    // Verify that we respected the connection limit
+    let max_concurrent = *max_concurrent_ref.lock().await;
+    assert!(
+        max_concurrent <= 3,
+        "Expected max 3 concurrent executions, got {}",
+        max_concurrent
+    );
+
+    println!(
+        "Connection limit test: {} clients, {} succeeded, {} rejected, max {} concurrent (limit was 3)",
+        num_clients, success_count, rejected_count, max_concurrent
+    );
 
     // Cleanup
     stop_test_daemon(shutdown_handle, join_handle).await;

@@ -61,6 +61,21 @@ echo "hello" | my-cli
 cat file.txt | my-cli process
 ```
 
+## Logging
+
+The library uses `tracing` for structured logging. Daemon implementations should initialize a tracing subscriber:
+
+```rust
+tracing_subscriber::fmt()
+    .with_target(false)
+    .compact()
+    .init();
+```
+
+This provides automatic client context (`client{id=X}`) for all logs. Handlers can add custom spans for command-level or operation-level context. Client-side logs are suppressed but shown on errors.
+
+See `examples/cli.rs` and `examples/concurrent.rs` for complete logging setup examples.
+
 ## Example
 
 See `examples/cli.rs` for a complete working example:

@@ -54,9 +54,21 @@ fn print_usage() {
 async fn run_daemon_mode() -> Result<()> {
     let (daemon_id, build_timestamp) = parse_daemon_args()?;
 
-    println!(
-        "Starting daemon (ID: {}, build: {})",
-        daemon_id, build_timestamp
+    // Initialize tracing subscriber for daemon logs
+    // Logs go to stderr with compact format
+    // To redirect to a file instead:
+    //   let file = std::fs::File::create(format!("/tmp/daemon-{}.log", daemon_id))?;
+    //   tracing_subscriber::fmt().with_writer(file).init();
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_thread_ids(false)
+        .compact()
+        .init();
+
+    tracing::info!(
+        daemon_id,
+        build_timestamp,
+        "Starting daemon"
     );
 
     let handler = CommandProcessor::new();

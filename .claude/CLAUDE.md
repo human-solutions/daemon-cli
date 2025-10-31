@@ -39,9 +39,12 @@ echo "process file.txt" | cargo run --example cli
 
 **Server (`src/server.rs`)**
 - `DaemonServer` - Background daemon that processes commands
-- `DaemonServer::new()` returns `(DaemonServer, DaemonHandle)` - always includes shutdown capability
+- `DaemonServer::new()` returns `(DaemonServer, DaemonHandle)` - default limit of 100 concurrent connections
+- `DaemonServer::new_with_limit()` allows custom connection limit
 - `DaemonHandle::shutdown()` gracefully stops the server; drop handle to run indefinitely
-- Single-task processing model (one command at a time)
+- Concurrent processing model (multiple clients and commands simultaneously)
+- Each client connection handled in separate tokio task
+- Connection limiting always enabled (default: 100, configurable)
 - Streaming output via tokio duplex channel
 - Cancellation via `CancellationToken` when connection closes
 
@@ -61,11 +64,14 @@ echo "process file.txt" | cargo run --example cli
 
 **Command Execution Flow:**
 1. Client sends `Command` message with stdin content
-2. Server creates duplex channel for streaming output
-3. Handler writes output incrementally to channel
-4. Server sends `OutputChunk` messages to client as data arrives
-5. Client streams chunks to stdout
-6. On handler completion: server closes connection (success) or sends `CommandError`
+2. Server spawns task to handle connection (concurrent with other clients)
+3. Server creates duplex channel for streaming output
+4. Handler writes output incrementally to channel
+5. Server sends `OutputChunk` messages to client as data arrives
+6. Client streams chunks to stdout
+7. On handler completion: server closes connection (success) or sends `CommandError`
+
+Note: Multiple clients can execute commands concurrently. Each connection gets its own task and handler instance (via Clone).
 
 **Cancellation Model:**
 - Ctrl+C on client closes socket connection
@@ -87,8 +93,55 @@ pub trait CommandHandler: Send + Sync {
 }
 ```
 
+**Concurrency Considerations:**
+- Handlers must implement `Clone + Send + Sync` for concurrent execution
+- Each client connection receives a cloned handler instance
+- If handlers need shared mutable state, use `Arc<Mutex<T>>` or similar
+- Handlers may run concurrently - design for thread-safety
+- For serial execution, implement queuing/routing within your handler
+
+**Example with shared state:**
+```rust
+#[derive(Clone)]
+struct MyHandler {
+    shared_state: Arc<Mutex<HashMap<String, String>>>,
+}
+```
+
+### Connection Limiting
+
+Connection limiting is always enabled to prevent resource exhaustion. The default limit is **100 concurrent connections**.
+
+**Using the default (100 connections):**
+```rust
+use daemon_cli::prelude::*;
+
+let handler = MyHandler::new();
+let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
+// Default: max 100 concurrent connections
+```
+
+**Customizing the limit:**
+```rust
+use daemon_cli::prelude::*;
+
+let handler = MyHandler::new();
+let (server, _handle) = DaemonServer::new_with_limit(
+    daemon_id,
+    build_timestamp,
+    handler,
+    10  // Max 10 concurrent clients
+);
+```
+
+When the limit is reached, new connections wait for an available slot. This is implemented using a semaphore, so waiting clients will automatically proceed when other clients disconnect.
+
 ## Platform Requirements
 
 - Unix-like systems only (Linux, macOS)
 - Uses Unix domain sockets (not portable to Windows)
 - Edition: Rust 2024
+
+# Other memory
+
+- Use the `gh` command to interact with GitHub

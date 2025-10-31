@@ -12,10 +12,12 @@ use tokio::{
 };
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct CommandProcessor {
     startup_time: Instant,
 }
 
+#[allow(dead_code)]
 impl CommandProcessor {
     pub fn new() -> Self {
         Self {
@@ -123,6 +125,7 @@ impl CommandHandler for CommandProcessor {
     }
 }
 
+#[allow(dead_code)]
 pub fn get_daemon_path() -> PathBuf {
     let mut exe_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     exe_path.push("target");
