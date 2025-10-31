@@ -76,11 +76,13 @@ impl CommandHandler for TaskQueueHandler {
         // Ensure we decrement on exit (even if error occurs)
         let state_clone = self.state.clone();
         let _guard = scopeguard::guard((), move |_| {
-            // Use blocking lock since we can't await in Drop
-            // This is safe because the critical section is tiny
-            if let Ok(mut state) = state_clone.try_lock() {
+            // Use block_in_place to safely acquire blocking lock in Drop
+            // This ensures the decrement always happens, even under contention
+            // Safe because the critical section is tiny
+            tokio::task::block_in_place(|| {
+                let mut state = state_clone.blocking_lock();
                 state.active_requests = state.active_requests.saturating_sub(1);
-            }
+            });
         });
 
         let parts: Vec<&str> = command.trim().split_whitespace().collect();
