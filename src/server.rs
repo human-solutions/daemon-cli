@@ -386,11 +386,15 @@ where
                         if stream_result.is_err() {
                             cancel_token.cancel();
                             // Wait for handler to finish with timeout (if it hasn't completed yet)
-                            if let Some(task) = handler_task {
+                            if let Some(mut task) = handler_task {
                                 select! {
-                                    _ = task => {}
+                                    _ = &mut task => {
+                                        tracing::debug!("Handler completed after cancellation");
+                                    }
                                     _ = sleep(Duration::from_secs(1)) => {
-                                        // Force abort if handler doesn't finish in time
+                                        // Handler didn't respect cancellation token - force abort
+                                        tracing::warn!("Handler did not respect cancellation token within 1s, forcefully aborting task");
+                                        task.abort();
                                     }
                                 }
                             }
