@@ -1,9 +1,8 @@
-use crate::error_context::{ErrorContextBuffer, ErrorContextLayer};
+use crate::error_context::{ErrorContextBuffer, get_or_init_global_error_context};
 use crate::transport::{SocketClient, SocketMessage, socket_path};
 use anyhow::{Result, bail};
 use std::{fs, path::PathBuf, process::Stdio, time::Duration};
 use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Client for communicating with daemon processes via Unix sockets.
 ///
@@ -52,14 +51,8 @@ impl DaemonClient {
         daemon_executable: PathBuf,
         build_timestamp: u64,
     ) -> Result<Self> {
-        // Initialize error context buffer and tracing for client-side logging
-        let error_context = ErrorContextBuffer::new();
-        let error_layer = ErrorContextLayer::new(error_context.clone());
-
-        // Set up tracing subscriber (only if not already initialized)
-        let _ = tracing_subscriber::registry()
-            .with(error_layer)
-            .try_init();
+        // Get or initialize the global error context buffer (shared across all clients)
+        let error_context = get_or_init_global_error_context();
 
         tracing::debug!(daemon_id, "Connecting to daemon");
 

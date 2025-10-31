@@ -6,13 +6,16 @@
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::fmt::Write as FmtWrite;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tracing::field::{Field, Visit};
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
 const BUFFER_SIZE: usize = 50;
+
+/// Global error context buffer shared across all client instances
+static GLOBAL_ERROR_CONTEXT: OnceLock<ErrorContextBuffer> = OnceLock::new();
 
 /// A single log entry in the error context buffer
 #[derive(Clone)]
@@ -74,6 +77,26 @@ impl Default for ErrorContextBuffer {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Get or initialize the global error context buffer and ensure tracing is set up
+///
+/// This function is idempotent - it can be called multiple times safely.
+/// The first call initializes the global buffer and tracing subscriber,
+/// subsequent calls return the same shared buffer.
+pub fn get_or_init_global_error_context() -> ErrorContextBuffer {
+    GLOBAL_ERROR_CONTEXT
+        .get_or_init(|| {
+            let buffer = ErrorContextBuffer::new();
+            let layer = ErrorContextLayer::new(buffer.clone());
+
+            // Initialize tracing subscriber (only succeeds once per process)
+            use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+            let _ = tracing_subscriber::registry().with(layer).try_init();
+
+            buffer
+        })
+        .clone()
 }
 
 /// Tracing layer that captures events to the error context buffer
