@@ -2,7 +2,7 @@ use crate::transport::{SocketMessage, SocketServer};
 use crate::*;
 use anyhow::Result;
 use std::{
-    fs, process,
+    fs, io::ErrorKind, process,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -402,8 +402,32 @@ where
                     });
                 }
                 Some(Err(e)) => {
-                    tracing::error!(error = %e, "Failed to accept connection");
-                    break;
+                    // Try to downcast to std::io::Error to inspect error kind
+                    if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                        match io_err.kind() {
+                            // Transient errors - log and continue with backoff
+                            ErrorKind::Interrupted | ErrorKind::WouldBlock => {
+                                tracing::warn!(error = %e, "Transient accept error, retrying after backoff");
+                                sleep(Duration::from_millis(100)).await;
+                                continue;
+                            }
+                            // Connection errors during accept - log and continue with backoff
+                            ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset => {
+                                tracing::warn!(error = %e, "Connection error during accept, continuing");
+                                sleep(Duration::from_millis(100)).await;
+                                continue;
+                            }
+                            // Fatal errors - log and break
+                            _ => {
+                                tracing::error!(error = %e, kind = ?io_err.kind(), "Fatal accept error, shutting down");
+                                break;
+                            }
+                        }
+                    } else {
+                        // Non-IO error - treat as fatal
+                        tracing::error!(error = %e, "Non-IO accept error, shutting down");
+                        break;
+                    }
                 }
                 None => {
                     // Should not happen with current logic
