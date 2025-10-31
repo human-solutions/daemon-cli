@@ -332,9 +332,12 @@ where
                                                 Ok(())
                                             };
 
-                                            // Wait for client to close connection (or timeout)
+                                            // Wait for client to close connection with timeout
                                             // This ensures the message is received before connection closes
-                                            let _ = connection.receive_message::<SocketMessage>().await;
+                                            let _ = tokio::time::timeout(
+                                                Duration::from_secs(5),
+                                                connection.receive_message::<SocketMessage>()
+                                            ).await;
 
                                             break result;
                                         }
