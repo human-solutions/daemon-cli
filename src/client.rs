@@ -27,8 +27,8 @@ use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
 ///         return;
 ///      };
 ///
-///      // Execute a command - output is streamed to stdout
-///      client.execute_command("process file.txt".to_string()).await.ok();
+///      // Execute a command - output is streamed to stdout, returns exit code
+///      let exit_code = client.execute_command("process file.txt".to_string()).await.ok();
 ///  # });
 /// ```
 pub struct DaemonClient {
@@ -302,7 +302,9 @@ impl DaemonClient {
     ///
     /// Streams output chunks as they arrive. Errors written to stderr.
     /// Ctrl+C cancels via connection close.
-    pub async fn execute_command(&mut self, command: String) -> Result<()> {
+    ///
+    /// Returns the command's exit code (0 for success, non-zero for errors).
+    pub async fn execute_command(&mut self, command: String) -> Result<i32> {
         tracing::debug!(command = %command, "Executing command");
 
         // Send command
@@ -324,10 +326,10 @@ impl DaemonClient {
                     stdout.write_all(&chunk).await?;
                     stdout.flush().await?;
                 }
-                Ok(Some(SocketMessage::CommandComplete)) => {
-                    // Command completed successfully
-                    tracing::debug!("Command completed successfully");
-                    return Ok(());
+                Ok(Some(SocketMessage::CommandComplete { exit_code })) => {
+                    // Command completed with exit code
+                    tracing::debug!(exit_code = exit_code, "Command completed");
+                    return Ok(exit_code);
                 }
                 Ok(Some(SocketMessage::CommandError(error))) => {
                     // Write error to stderr

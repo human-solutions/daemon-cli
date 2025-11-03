@@ -167,6 +167,6 @@ pub enum SocketMessage {
     VersionCheck { build_timestamp: u64 },
     Command(String),
     OutputChunk(Vec<u8>),
-    CommandComplete,
+    CommandComplete { exit_code: i32 },
     CommandError(String),
 }

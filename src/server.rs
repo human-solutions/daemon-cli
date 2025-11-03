@@ -49,10 +49,10 @@ static CLIENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 ///         command: &str,
 ///         mut output: impl AsyncWrite + Send + Unpin,
 ///         _cancel_token: CancellationToken,
-///     ) -> Result<()> {
+///     ) -> Result<i32> {
 ///         output.write_all(b"Processed: ").await?;
 ///         output.write_all(command.as_bytes()).await?;
-///         Ok(())
+///         Ok(0)
 ///     }
 /// }
 ///
@@ -119,9 +119,9 @@ where
 
     /// Create a new daemon server instance with explicit name, timestamp, and connection limit (primarily for testing).
     ///
-    /// Most users should use [`new()`](Self::new) or [`new_with_limit()`](Self::new_with_limit) which
-    /// auto-detect the daemon name and binary modification time. This method allows full control
-    /// for test isolation and version mismatch scenarios.
+    /// Most users should use [`new()`](Self::new) which auto-detects the daemon name and
+    /// binary modification time. This method allows full control for test isolation and
+    /// version mismatch scenarios.
     ///
     /// # Parameters
     ///
@@ -312,6 +312,7 @@ where
 
                         // Stream output chunks to client
                         let mut buffer = vec![0u8; 4096];
+                        let mut handler_exit_code: Option<i32> = None;
                         let mut handler_error: Option<String> = None;
                         let stream_result = loop {
                             select! {
@@ -320,29 +321,32 @@ where
                                     match read_result {
                                         Ok(0) => {
                                             // CRITICAL FIX: If handler task hasn't been polled yet, check it now
-                                            // This ensures we capture any error before sending completion message
+                                            // This ensures we capture the result before sending completion message
                                             if let Some(task) = handler_task.take() {
                                                 match task.await {
+                                                    Ok(Ok(exit_code)) => {
+                                                        handler_exit_code = Some(exit_code);
+                                                    }
                                                     Ok(Err(e)) => {
                                                         handler_error = Some(e.to_string());
                                                     }
                                                     Err(e) => {
                                                         handler_error = Some(format!("Task panicked: {}", e));
                                                     }
-                                                    _ => {}
                                                 }
                                             }
 
                                             // EOF - handler closed output
-                                            // Send completion message (error or success)
+                                            // Send completion message (error or success with exit code)
                                             let result = if let Some(ref error) = handler_error {
                                                 tracing::error!(error = %error, "Handler failed");
                                                 let _ = connection.send_message(&SocketMessage::CommandError(error.clone())).await;
                                                 let _ = connection.flush().await;
                                                 Err(anyhow::anyhow!("{}", error))
                                             } else {
-                                                tracing::debug!("Handler completed successfully");
-                                                let _ = connection.send_message(&SocketMessage::CommandComplete).await;
+                                                let exit_code = handler_exit_code.unwrap_or(0);
+                                                tracing::debug!(exit_code = exit_code, "Handler completed");
+                                                let _ = connection.send_message(&SocketMessage::CommandComplete { exit_code }).await;
                                                 let _ = connection.flush().await;
                                                 Ok(())
                                             };
@@ -378,8 +382,9 @@ where
                                     handler_task.take();
 
                                     match task_result {
-                                        Ok(Ok(())) => {
-                                            // Handler succeeded - continue reading remaining output
+                                        Ok(Ok(exit_code)) => {
+                                            // Handler succeeded - save exit code and continue reading remaining output
+                                            handler_exit_code = Some(exit_code);
                                             continue;
                                         }
                                         Ok(Err(e)) => {

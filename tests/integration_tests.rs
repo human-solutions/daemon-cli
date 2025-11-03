@@ -74,11 +74,11 @@ impl CommandHandler for EchoHandler {
         command: &str,
         mut output: impl AsyncWrite + Send + Unpin,
         _cancel: CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         output.write_all(b"Echo: ").await?;
         output.write_all(command.as_bytes()).await?;
         output.write_all(b"\n").await?;
-        Ok(())
+        Ok(0)
     }
 }
 
@@ -93,14 +93,14 @@ impl CommandHandler for ChunkedHandler {
         _command: &str,
         mut output: impl AsyncWrite + Send + Unpin,
         _cancel: CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         for i in 1..=5 {
             output
                 .write_all(format!("Chunk {}\n", i).as_bytes())
                 .await?;
             sleep(Duration::from_millis(10)).await;
         }
-        Ok(())
+        Ok(0)
     }
 }
 
@@ -115,7 +115,7 @@ impl CommandHandler for CancellableHandler {
         _command: &str,
         mut output: impl AsyncWrite + Send + Unpin,
         cancel: CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         for i in 1..=100 {
             if cancel.is_cancelled() {
                 output.write_all(b"Cancelled\n").await?;
@@ -124,7 +124,7 @@ impl CommandHandler for CancellableHandler {
             output.write_all(format!("Step {}\n", i).as_bytes()).await?;
             sleep(Duration::from_millis(50)).await;
         }
-        Ok(())
+        Ok(0)
     }
 }
 
@@ -139,7 +139,7 @@ impl CommandHandler for ErrorHandler {
         _command: &str,
         mut output: impl AsyncWrite + Send + Unpin,
         _cancel: CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         output.write_all(b"Starting...\n").await?;
         Err(anyhow::anyhow!("Test error"))
     }
@@ -159,12 +159,13 @@ async fn test_basic_streaming() -> Result<()> {
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
     let mut client = DaemonClient::connect_with_name_and_timestamp(&daemon_name, &root_path, daemon_exe, build_timestamp).await?;
 
-    // Execute command and capture output
+    // Execute command and capture exit code
     let result = client.execute_command("Hello, World!".to_string()).await;
 
     // Note: execute_command writes to stdout, so we can't easily capture it in this test
     // In a real integration test, we'd redirect stdout or use a different approach
     assert!(result.is_ok());
+    assert_eq!(result.unwrap(), 0);  // Success exit code
 
     // Cleanup
     stop_test_daemon(shutdown_handle, join_handle).await;
@@ -188,6 +189,7 @@ async fn test_chunked_output() -> Result<()> {
 
     let result = client.execute_command("test".to_string()).await;
     assert!(result.is_ok());
+    assert_eq!(result.unwrap(), 0);  // Success exit code
 
     // Cleanup
     stop_test_daemon(shutdown_handle, join_handle).await;
@@ -239,6 +241,7 @@ async fn test_multiple_sequential_commands() -> Result<()> {
             DaemonClient::connect_with_name_and_timestamp(&daemon_name, &root_path, daemon_exe.clone(), build_timestamp).await?;
         let result = client.execute_command(format!("Command {}", i)).await;
         assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);  // Success exit code
 
         // Small delay between commands
         sleep(Duration::from_millis(50)).await;
@@ -309,7 +312,7 @@ impl CommandHandler for ConcurrentTrackingHandler {
         _command: &str,
         mut output: impl AsyncWrite + Send + Unpin,
         _cancel: CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         // Increment active count
         {
             let mut active = self.active_count.lock().await;
@@ -333,7 +336,7 @@ impl CommandHandler for ConcurrentTrackingHandler {
             *active -= 1;
         }
 
-        Ok(())
+        Ok(0)
     }
 }
 
@@ -370,7 +373,9 @@ async fn test_concurrent_clients() -> Result<()> {
     for handle in client_handles {
         let result = handle.await;
         assert!(result.is_ok());
-        assert!(result.unwrap().is_ok());
+        let exit_code = result.unwrap();
+        assert!(exit_code.is_ok());
+        assert_eq!(exit_code.unwrap(), 0);  // Success exit code
     }
 
     // Verify that we actually had concurrent execution
@@ -420,8 +425,10 @@ async fn test_concurrent_stress_10_plus_clients() -> Result<()> {
     for handle in client_handles {
         let result = handle.await;
         assert!(result.is_ok(), "Client task panicked");
-        if result.unwrap().is_ok() {
-            success_count += 1;
+        match result.unwrap() {
+            Ok(exit_code) if exit_code == 0 => success_count += 1,
+            Ok(exit_code) => panic!("Unexpected exit code: {}", exit_code),
+            Err(_) => {} // Expected errors are ok in stress test
         }
     }
 
@@ -488,7 +495,8 @@ async fn test_connection_limit() -> Result<()> {
         let result = handle.await;
         assert!(result.is_ok(), "Client task panicked");
         match result.unwrap() {
-            Ok(_) => success_count += 1,
+            Ok(exit_code) if exit_code == 0 => success_count += 1,
+            Ok(exit_code) => panic!("Unexpected exit code: {}", exit_code),
             Err(e) => {
                 // When server is at capacity, connection is dropped which causes various errors
                 // (connection reset, unexpected close, invalid handshake, etc.)

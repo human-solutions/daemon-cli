@@ -29,20 +29,20 @@ impl CommandHandler for CommandProcessor {
         command: &str,
         mut output: impl AsyncWrite + Send + Unpin,
         cancel_token: CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         let parts: Vec<&str> = command.trim().split_whitespace().collect();
 
         match parts.get(0) {
             Some(&"status") => {
                 output.write_all(b"Daemon ready for processing\n").await?;
-                Ok(())
+                Ok(0)
             }
 
             Some(&"uptime") => {
                 let uptime = self.startup_time.elapsed();
                 let message = format!("Daemon uptime: {:.2}s\n", uptime.as_secs_f64());
                 output.write_all(message.as_bytes()).await?;
-                Ok(())
+                Ok(0)
             }
 
             Some(&"process") => {
@@ -70,7 +70,7 @@ impl CommandHandler for CommandProcessor {
                 output
                     .write_all(format!("Successfully processed {}\n", filename).as_bytes())
                     .await?;
-                Ok(())
+                Ok(0)
             }
 
             Some(&"long") => {
@@ -103,7 +103,7 @@ impl CommandHandler for CommandProcessor {
                 }
 
                 output.write_all(b"Task completed\n").await?;
-                Ok(())
+                Ok(0)
             }
 
             Some(&"echo") => {
@@ -111,12 +111,13 @@ impl CommandHandler for CommandProcessor {
                 let message = parts[1..].join(" ");
                 output.write_all(message.as_bytes()).await?;
                 output.write_all(b"\n").await?;
-                Ok(())
+                Ok(0)
             }
 
-            _ => Err(anyhow::anyhow!(
-                "Unknown command. Available: status, uptime, process [file], long [seconds], echo [message]"
-            )),
+            _ => {
+                output.write_all(b"Unknown command. Available: status, uptime, process [file], long [seconds], echo [message]\n").await?;
+                Ok(127)  // Exit code 127 for unknown command
+            }
         }
     }
 }

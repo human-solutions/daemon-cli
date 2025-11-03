@@ -7,13 +7,14 @@ A streaming daemon-client framework for Rust with automatic lifecycle management
 - Auto-spawning daemons with mtime-based version synchronization
 - Streaming stdin/stdout interface
 - Ctrl+C cancellation support
+- Custom exit codes (0-255) for command results
 - Low latency (< 50ms warm, < 500ms cold)
 
 ## Installation
 
 ```toml
 [dependencies]
-daemon-cli = "0.2.0"
+daemon-cli = "0.3.0"
 ```
 
 ## Usage
@@ -32,9 +33,9 @@ impl CommandHandler for MyHandler {
         command: &str,
         mut output: impl AsyncWrite + Unpin + Send,
         cancel: CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         output.write_all(format!("Received: {}\n", command).as_bytes()).await?;
-        Ok(())
+        Ok(0)  // Return exit code (0 = success)
     }
 }
 ```
@@ -55,7 +56,8 @@ server.run().await?;
 let root_path = "/path/to/project";
 // Automatically detects daemon name, executable path, and binary mtime
 let mut client = DaemonClient::connect(root_path).await?;
-client.execute_command(command).await?;
+let exit_code = client.execute_command(command).await?;
+std::process::exit(exit_code);  // Exit with the command's exit code
 ```
 
 **Use it:**
@@ -64,6 +66,34 @@ client.execute_command(command).await?;
 echo "hello" | my-cli
 cat file.txt | my-cli process
 ```
+
+## Exit Codes
+
+Handlers return custom exit codes (0-255) to indicate command results:
+
+```rust
+async fn handle(...) -> Result<i32> {
+    match command.trim() {
+        "status" => {
+            output.write_all(b"Ready\n").await?;
+            Ok(0)  // Success
+        }
+        "unknown" => {
+            output.write_all(b"Unknown command\n").await?;
+            Ok(127)  // Command not found (shell convention)
+        }
+        _ => {
+            // For unrecoverable errors, return Err
+            // This becomes exit code 1 with error message to stderr
+            Err(anyhow::anyhow!("Fatal error"))
+        }
+    }
+}
+```
+
+- `Ok(0)` - Success
+- `Ok(1-255)` - Application-specific error codes
+- `Err(e)` - Unrecoverable error (becomes exit code 1 with error message)
 
 ## Logging
 

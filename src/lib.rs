@@ -37,12 +37,12 @@
 //!         command: &str,
 //!         mut output: impl AsyncWrite + Send + Unpin,
 //!         cancel_token: CancellationToken,
-//!     ) -> Result<()> {
+//!     ) -> Result<i32> {
 //!         // Parse and process the command
 //!         output.write_all(b"Processing: ").await?;
 //!         output.write_all(command.as_bytes()).await?;
 //!         output.write_all(b"\n").await?;
-//!         Ok(())
+//!         Ok(0)
 //!     }
 //! }
 //! ```
@@ -63,9 +63,9 @@
 //! #         command: &str,
 //! #         mut output: impl AsyncWrite + Send + Unpin,
 //! #         _cancel_token: CancellationToken,
-//! #     ) -> Result<()> {
+//! #     ) -> Result<i32> {
 //! #         output.write_all(command.as_bytes()).await?;
-//! #         Ok(())
+//! #         Ok(0)
 //! #     }
 //! # }
 //!
@@ -211,7 +211,7 @@ fn auto_detect_daemon_name() -> String {
 ///         command: &str,
 ///         mut output: impl AsyncWrite + Send + Unpin,
 ///         cancel_token: CancellationToken,
-///     ) -> Result<()> {
+///     ) -> Result<i32> {
 ///         // Parse the command
 ///         let parts: Vec<&str> = command.trim().split_whitespace().collect();
 ///
@@ -226,14 +226,15 @@ fn auto_detect_daemon_name() -> String {
 ///                 }
 ///
 ///                 output.write_all(b"Done!\n").await?;
-///                 Ok(())
+///                 Ok(0)
 ///             }
 ///             Some(&"status") => {
 ///                 output.write_all(b"Ready\n").await?;
-///                 Ok(())
+///                 Ok(0)
 ///             }
 ///             _ => {
-///                 Err(anyhow::anyhow!("Unknown command"))
+///                 output.write_all(b"Unknown command\n").await?;
+///                 Ok(127)  // Exit code 127 for unknown command
 ///             }
 ///         }
 ///     }
@@ -248,10 +249,13 @@ pub trait CommandHandler: Send + Sync {
     ///
     /// Write output incrementally via `output`. Long-running operations should
     /// check `cancel_token.is_cancelled()` to handle graceful cancellation.
+    ///
+    /// Returns an exit code (0 for success, 1-255 for errors). For unrecoverable
+    /// errors, return `Err(e)` which will be reported as exit code 1.
     async fn handle(
         &self,
         command: &str,
         output: impl AsyncWrite + Send + Unpin,
         cancel_token: CancellationToken,
-    ) -> Result<()>;
+    ) -> Result<i32>;
 }

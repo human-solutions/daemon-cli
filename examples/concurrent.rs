@@ -23,7 +23,7 @@
 
 mod common;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use common::*;
 use daemon_cli::prelude::*;
 use std::{collections::VecDeque, env, sync::Arc};
@@ -65,7 +65,7 @@ impl CommandHandler for TaskQueueHandler {
         command: &str,
         mut output: impl AsyncWrite + Send + Unpin,
         cancel_token: CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         // Increment active requests counter
         {
             let mut state = self.state.lock().await;
@@ -103,7 +103,7 @@ impl CommandHandler for TaskQueueHandler {
                 output
                     .write_all(format!("Added task: {}\n", task_description).as_bytes())
                     .await?;
-                Ok(())
+                Ok(0)
             }
 
             Some(&"list-tasks") => {
@@ -124,7 +124,7 @@ impl CommandHandler for TaskQueueHandler {
                             .await?;
                     }
                 }
-                Ok(())
+                Ok(0)
             }
 
             Some(&"process-task") => {
@@ -155,7 +155,7 @@ impl CommandHandler for TaskQueueHandler {
                 } else {
                     output.write_all(b"No tasks to process\n").await?;
                 }
-                Ok(())
+                Ok(0)
             }
 
             Some(&"stats") => {
@@ -178,7 +178,7 @@ impl CommandHandler for TaskQueueHandler {
                 output
                     .write_all(format!("Tasks in queue:  {}\n", queue_len).as_bytes())
                     .await?;
-                Ok(())
+                Ok(0)
             }
 
             Some(&"clear") => {
@@ -191,7 +191,7 @@ impl CommandHandler for TaskQueueHandler {
                 output
                     .write_all(format!("Cleared {} tasks\n", count).as_bytes())
                     .await?;
-                Ok(())
+                Ok(0)
             }
 
             _ => {
@@ -211,7 +211,7 @@ impl CommandHandler for TaskQueueHandler {
                 output
                     .write_all(b"  clear                   - Clear all tasks\n")
                     .await?;
-                Err(anyhow::anyhow!("Unknown command"))
+                Ok(127)  // Exit code 127 for unknown command
             }
         }
     }
@@ -293,7 +293,7 @@ async fn run_client_mode() -> Result<()> {
     if command.trim().is_empty() {
         eprintln!("Error: No command provided via stdin");
         print_usage();
-        bail!("No command provided");
+        std::process::exit(1);
     }
 
     // Connect to daemon (auto-spawns if needed, auto-detects everything)
@@ -302,7 +302,8 @@ async fn run_client_mode() -> Result<()> {
     let mut client = DaemonClient::connect(&root_path).await?;
 
     // Execute command and stream output to stdout
-    client.execute_command(command).await?;
+    let exit_code = client.execute_command(command).await?;
 
-    Ok(())
+    // Exit with the command's exit code
+    std::process::exit(exit_code);
 }

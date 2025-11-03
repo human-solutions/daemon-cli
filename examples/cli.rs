@@ -1,6 +1,6 @@
 mod common;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use common::*;
 use daemon_cli::prelude::*;
 use std::env;
@@ -84,7 +84,7 @@ async fn run_client_mode() -> Result<()> {
     if command.trim().is_empty() {
         eprintln!("Error: No command provided via stdin");
         print_usage();
-        bail!("No command provided");
+        std::process::exit(1);
     }
 
     // Connect to daemon (auto-spawns if needed, auto-detects everything)
@@ -93,7 +93,8 @@ async fn run_client_mode() -> Result<()> {
     let mut client = DaemonClient::connect(&root_path).await?;
 
     // Execute command and stream output to stdout
-    client.execute_command(command).await?;
+    let exit_code = client.execute_command(command).await?;
 
-    Ok(())
+    // Exit with the command's exit code
+    std::process::exit(exit_code);
 }

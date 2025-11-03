@@ -21,9 +21,9 @@ impl CommandHandler for SimpleHandler {
         command: &str,
         mut output: impl AsyncWrite + Send + Unpin,
         _cancel: CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         output.write_all(command.as_bytes()).await?;
-        Ok(())
+        Ok(0)
     }
 }
 

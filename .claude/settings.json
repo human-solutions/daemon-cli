@@ -6,7 +6,13 @@
       "Bash(grep:*)",
       "Bash(find:*)",
       "Bash(timeout 10 cargo run:*)",
-      "Bash(timeout 10 cargo test:*)"
+      "Bash(timeout 10 cargo test:*)",
+      "Bash(timeout 5 cargo run:*)",
+      "Bash(git add:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(git fetch:*)",
+      "WebSearch"
     ],
     "defaultMode": "acceptEdits"
   }
