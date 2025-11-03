@@ -19,13 +19,10 @@ use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
 ///
 /// ```rust
 /// use daemon_cli::prelude::*;
-/// use std::path::PathBuf;
-///
-/// let daemon_exe = PathBuf::from("./target/debug/examples/cli");
 ///
 /// // Actual usage pattern (requires daemon binary):
 ///  # tokio_test::block_on(async {
-///      let Ok(mut client) = DaemonClient::connect("cli", "/path/to/project", daemon_exe).await else {
+///      let Ok(mut client) = DaemonClient::connect("/path/to/project").await else {
 ///         // handle error...
 ///         return;
 ///      };
@@ -51,26 +48,33 @@ pub struct DaemonClient {
 impl DaemonClient {
     /// Connect to daemon, spawning it if needed with automatic version sync.
     ///
-    /// Automatically detects the binary's modification time for version checking.
-    /// Handles daemon detection, spawning, readiness waiting, and version
-    /// handshake. Restarts daemon on version mismatch.
-    pub async fn connect(
-        daemon_name: &str,
-        daemon_path: &str,
-        daemon_executable: PathBuf,
-    ) -> Result<Self> {
+    /// Automatically detects the daemon name from the binary filename, the daemon
+    /// executable path (current binary), and the binary's modification time for
+    /// version checking. Handles daemon detection, spawning, readiness waiting,
+    /// and version handshake. Restarts daemon on version mismatch.
+    pub async fn connect(daemon_path: &str) -> Result<Self> {
+        let daemon_name = crate::auto_detect_daemon_name();
+        let daemon_executable = std::env::current_exe()
+            .map_err(|e| anyhow::anyhow!("Failed to get current executable path: {}", e))?;
         let build_timestamp = crate::get_build_timestamp();
-        Self::connect_with_timestamp(daemon_name, daemon_path, daemon_executable, build_timestamp).await
+        Self::connect_with_name_and_timestamp(
+            &daemon_name,
+            daemon_path,
+            daemon_executable,
+            build_timestamp,
+        )
+        .await
     }
 
-    /// Connect to daemon with explicit timestamp (primarily for testing).
+    /// Connect to daemon with explicit name and timestamp (primarily for testing).
     ///
-    /// Most users should use [`connect()`](Self::connect) which auto-detects the binary's modification time.
-    /// This method allows tests to provide specific timestamps for version mismatch scenarios.
+    /// Most users should use [`connect()`](Self::connect) which auto-detects the daemon name
+    /// and binary modification time. This method allows full control for test isolation and
+    /// version mismatch scenarios.
     ///
     /// Handles daemon detection, spawning, readiness waiting, and version
     /// handshake. Restarts daemon on version mismatch.
-    pub async fn connect_with_timestamp(
+    pub async fn connect_with_name_and_timestamp(
         daemon_name: &str,
         daemon_path: &str,
         daemon_executable: PathBuf,
@@ -84,7 +88,8 @@ impl DaemonClient {
         // Try to connect to existing daemon first
         let socket_path = socket_path(daemon_name, daemon_path);
 
-        let mut socket_client = if let Ok(existing_client) = SocketClient::connect(daemon_name, daemon_path).await
+        let mut socket_client = if let Ok(existing_client) =
+            SocketClient::connect(daemon_name, daemon_path).await
         {
             // Daemon is already running and responsive - use it
             tracing::debug!("Connected to existing daemon");
@@ -103,8 +108,7 @@ impl DaemonClient {
             Self::cleanup_stale_processes(daemon_name, daemon_path).await;
 
             // Spawn new daemon
-            match Self::spawn_and_wait_for_ready(daemon_name, daemon_path, &daemon_executable)
-                .await
+            match Self::spawn_and_wait_for_ready(daemon_name, daemon_path, &daemon_executable).await
             {
                 Ok(client) => client,
                 Err(e) => {
@@ -140,19 +144,16 @@ impl DaemonClient {
             Self::cleanup_stale_processes(daemon_name, daemon_path).await;
 
             // Spawn new daemon with correct version
-            socket_client = match Self::spawn_and_wait_for_ready(
-                daemon_name,
-                daemon_path,
-                &daemon_executable,
-            )
-            .await
-            {
-                Ok(client) => client,
-                Err(e) => {
-                    error_context.dump_to_stderr();
-                    return Err(e);
-                }
-            };
+            socket_client =
+                match Self::spawn_and_wait_for_ready(daemon_name, daemon_path, &daemon_executable)
+                    .await
+                {
+                    Ok(client) => client,
+                    Err(e) => {
+                        error_context.dump_to_stderr();
+                        return Err(e);
+                    }
+                };
 
             // Retry handshake
             socket_client
@@ -194,8 +195,7 @@ impl DaemonClient {
 
         // Retry daemon spawning to handle race conditions with concurrent test cleanup
         for retry_attempt in 0..3 {
-            let result =
-                Self::try_spawn_daemon(daemon_name, daemon_path, daemon_executable).await;
+            let result = Self::try_spawn_daemon(daemon_name, daemon_path, daemon_executable).await;
 
             match result {
                 Ok(client) => {
@@ -354,7 +354,3 @@ impl DaemonClient {
         }
     }
 }
-
-// #[cfg(test)]
-// #[path = "client_tests.rs"]
-// mod tests;

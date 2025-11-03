@@ -1,11 +1,7 @@
 use anyhow::Result;
 use daemon_cli::prelude::*;
 use std::time::Duration;
-use std::{
-    env,
-    path::PathBuf,
-    time::Instant,
-};
+use std::{env, time::Instant};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     time::sleep,
@@ -125,37 +121,13 @@ impl CommandHandler for CommandProcessor {
     }
 }
 
-#[allow(dead_code)]
-pub fn get_daemon_path() -> PathBuf {
-    let mut exe_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    exe_path.push("target");
-    exe_path.push("debug");
-    exe_path.push("examples");
-    exe_path.push("cli");
-
-    if cfg!(windows) {
-        exe_path.set_extension("exe");
-    }
-
-    exe_path
-}
-
-pub fn parse_daemon_args() -> Result<(String, String)> {
+pub fn parse_daemon_args() -> Result<String> {
     let args: Vec<String> = env::args().collect();
-    let mut daemon_name = None;
     let mut daemon_path = None;
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--daemon-name" => {
-                if i + 1 < args.len() {
-                    daemon_name = Some(args[i + 1].clone());
-                    i += 2;
-                } else {
-                    return Err(anyhow::anyhow!("--daemon-name requires a value"));
-                }
-            }
             "--daemon-path" => {
                 if i + 1 < args.len() {
                     daemon_path = Some(args[i + 1].clone());
@@ -170,8 +142,7 @@ pub fn parse_daemon_args() -> Result<(String, String)> {
         }
     }
 
-    let daemon_name = daemon_name.ok_or_else(|| anyhow::anyhow!("--daemon-name is required"))?;
     let daemon_path = daemon_path.ok_or_else(|| anyhow::anyhow!("--daemon-path is required"))?;
 
-    Ok((daemon_name, daemon_path))
+    Ok(daemon_path)
 }

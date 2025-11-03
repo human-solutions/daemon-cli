@@ -56,9 +56,9 @@ static CLIENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 ///     }
 /// }
 ///
-/// // Demonstrate server creation - automatically detects binary mtime
+/// // Demonstrate server creation - automatically detects daemon name and binary mtime
 /// let daemon = MyDaemon;
-/// let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", daemon);
+/// let (server, _handle) = DaemonServer::new("/path/to/project", daemon);
 /// // Use handle.shutdown() to stop the server, or drop it to run indefinitely
 /// ```
 pub struct DaemonServer<H> {
@@ -97,12 +97,12 @@ where
 {
     /// Create a new daemon server instance with default connection limit (100).
     ///
-    /// Automatically detects the binary's modification time for version checking.
-    /// Returns the server and a handle that can be used to shut it down gracefully.
+    /// Automatically detects the daemon name from the binary filename and the
+    /// binary's modification time for version checking. Returns the server and
+    /// a handle that can be used to shut it down gracefully.
     ///
     /// # Parameters
     ///
-    /// * `daemon_name` - Name of the daemon (e.g., CLI tool name)
     /// * `daemon_path` - Path used as unique identifier/scope for this daemon instance
     /// * `handler` - Your command handler implementation
     ///
@@ -111,88 +111,17 @@ where
     /// A tuple of (DaemonServer, DaemonHandle). Call `shutdown()` on the handle
     /// to gracefully stop the server, or drop it to let the server run indefinitely.
     ///
-    pub fn new(daemon_name: &str, daemon_path: &str, handler: H) -> (Self, DaemonHandle) {
+    pub fn new(daemon_path: &str, handler: H) -> (Self, DaemonHandle) {
+        let daemon_name = crate::auto_detect_daemon_name();
         let build_timestamp = crate::get_build_timestamp();
-        Self::new_with_timestamp(daemon_name, daemon_path, build_timestamp, handler)
+        Self::new_with_name_and_timestamp(&daemon_name, daemon_path, build_timestamp, handler, 100)
     }
 
-    /// Create a new daemon server instance with explicit timestamp (primarily for testing).
+    /// Create a new daemon server instance with explicit name, timestamp, and connection limit (primarily for testing).
     ///
-    /// Most users should use [`new()`](Self::new) which auto-detects the binary's modification time.
-    /// This method allows tests to provide specific timestamps for version mismatch scenarios.
-    ///
-    /// # Parameters
-    ///
-    /// * `daemon_name` - Name of the daemon (e.g., CLI tool name)
-    /// * `daemon_path` - Path used as unique identifier/scope for this daemon instance
-    /// * `build_timestamp` - Binary mtime (seconds since Unix epoch) for version checking
-    /// * `handler` - Your command handler implementation
-    ///
-    /// # Returns
-    ///
-    /// A tuple of (DaemonServer, DaemonHandle). Call `shutdown()` on the handle
-    /// to gracefully stop the server, or drop it to let the server run indefinitely.
-    ///
-    pub fn new_with_timestamp(daemon_name: &str, daemon_path: &str, build_timestamp: u64, handler: H) -> (Self, DaemonHandle) {
-        Self::new_with_limit_and_timestamp(daemon_name, daemon_path, build_timestamp, handler, 100)
-    }
-
-    /// Create a new daemon server instance with custom connection limit.
-    ///
-    /// Automatically detects the binary's modification time for version checking.
-    /// Returns the server and a handle that can be used to shut it down gracefully.
-    ///
-    /// # Parameters
-    ///
-    /// * `daemon_name` - Name of the daemon (e.g., CLI tool name)
-    /// * `daemon_path` - Path used as unique identifier/scope for this daemon instance
-    /// * `handler` - Your command handler implementation
-    /// * `max_connections` - Maximum number of concurrent client connections
-    ///
-    /// # Returns
-    ///
-    /// A tuple of (DaemonServer, DaemonHandle). Call `shutdown()` on the handle
-    /// to gracefully stop the server, or drop it to let the server run indefinitely.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use daemon_cli::prelude::*;
-    /// # use tokio::io::{AsyncWrite, AsyncWriteExt};
-    /// #
-    /// # #[derive(Clone)]
-    /// # struct MyHandler;
-    /// #
-    /// # #[async_trait]
-    /// # impl CommandHandler for MyHandler {
-    /// #     async fn handle(
-    /// #         &self,
-    /// #         command: &str,
-    /// #         mut output: impl AsyncWrite + Send + Unpin,
-    /// #         _cancel_token: CancellationToken,
-    /// #     ) -> Result<()> {
-    /// #         output.write_all(command.as_bytes()).await?;
-    /// #         Ok(())
-    /// #     }
-    /// # }
-    ///
-    /// let handler = MyHandler;
-    /// let (server, _handle) = DaemonServer::new_with_limit("my-cli", "/path/to/project", handler, 10);
-    /// ```
-    pub fn new_with_limit(
-        daemon_name: &str,
-        daemon_path: &str,
-        handler: H,
-        max_connections: usize,
-    ) -> (Self, DaemonHandle) {
-        let build_timestamp = crate::get_build_timestamp();
-        Self::new_with_limit_and_timestamp(daemon_name, daemon_path, build_timestamp, handler, max_connections)
-    }
-
-    /// Create a new daemon server instance with explicit timestamp and connection limit (primarily for testing).
-    ///
-    /// Most users should use [`new_with_limit()`](Self::new_with_limit) which auto-detects the binary's modification time.
-    /// This method allows tests to provide specific timestamps for version mismatch scenarios.
+    /// Most users should use [`new()`](Self::new) or [`new_with_limit()`](Self::new_with_limit) which
+    /// auto-detect the daemon name and binary modification time. This method allows full control
+    /// for test isolation and version mismatch scenarios.
     ///
     /// # Parameters
     ///
@@ -207,7 +136,7 @@ where
     /// A tuple of (DaemonServer, DaemonHandle). Call `shutdown()` on the handle
     /// to gracefully stop the server, or drop it to let the server run indefinitely.
     ///
-    pub fn new_with_limit_and_timestamp(
+    pub fn new_with_name_and_timestamp(
         daemon_name: &str,
         daemon_path: &str,
         build_timestamp: u64,

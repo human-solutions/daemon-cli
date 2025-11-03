@@ -31,12 +31,11 @@ fn print_usage() {
     println!("  (any other)    Run as client (reads stdin, sends to daemon, outputs to stdout)");
     println!();
     println!("Daemon options:");
-    println!("  --daemon-name <name>      Daemon name (required)");
     println!("  --daemon-path <path>      Daemon path/scope (required)");
     println!();
     println!("Examples:");
     println!("  # Start daemon");
-    println!("  cargo run --example cli -- daemon --daemon-name cli --daemon-path /tmp/test");
+    println!("  cargo run --example cli -- daemon --daemon-path /tmp/test");
     println!();
     println!("  # Execute commands via client");
     println!("  echo \"status\" | cargo run --example cli");
@@ -52,12 +51,12 @@ fn print_usage() {
 }
 
 async fn run_daemon_mode() -> Result<()> {
-    let (daemon_name, daemon_path) = parse_daemon_args()?;
+    let daemon_path = parse_daemon_args()?;
 
     // Initialize tracing subscriber for daemon logs
     // Logs go to stderr with compact format
     // To redirect to a file instead:
-    //   let file = std::fs::File::create(format!("/tmp/daemon-{}.log", daemon_name))?;
+    //   let file = std::fs::File::create("/tmp/daemon.log")?;
     //   tracing_subscriber::fmt().with_writer(file).init();
     tracing_subscriber::fmt()
         .with_target(false)
@@ -65,11 +64,11 @@ async fn run_daemon_mode() -> Result<()> {
         .compact()
         .init();
 
-    tracing::info!(daemon_name, daemon_path, "Starting daemon");
+    tracing::info!(daemon_path, "Starting daemon");
 
     let handler = CommandProcessor::new();
-    // Automatically detects binary mtime for version checking
-    let (server, _handle) = DaemonServer::new(&daemon_name, &daemon_path, handler);
+    // Automatically detects daemon name and binary mtime
+    let (server, _handle) = DaemonServer::new(&daemon_path, handler);
     server.run().await?;
 
     Ok(())
@@ -88,12 +87,10 @@ async fn run_client_mode() -> Result<()> {
         bail!("No command provided");
     }
 
-    // Connect to daemon (auto-spawns if needed, auto-detects binary mtime)
-    let daemon_name = "cli";
+    // Connect to daemon (auto-spawns if needed, auto-detects everything)
     let daemon_path = env::current_dir()?.to_string_lossy().to_string();
-    let daemon_exe = get_daemon_path();
 
-    let mut client = DaemonClient::connect(daemon_name, &daemon_path, daemon_exe).await?;
+    let mut client = DaemonClient::connect(&daemon_path).await?;
 
     // Execute command and stream output to stdout
     client.execute_command(command).await?;

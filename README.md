@@ -42,10 +42,9 @@ impl CommandHandler for MyHandler {
 **Run daemon:**
 
 ```rust
-let daemon_name = "my-cli";
 let daemon_path = "/path/to/project";
-// Automatically detects binary mtime for version checking
-let (server, _handle) = DaemonServer::new(daemon_name, daemon_path, MyHandler);
+// Automatically detects daemon name and binary mtime
+let (server, _handle) = DaemonServer::new(daemon_path, MyHandler);
 server.run().await?;
 // Optionally use handle.shutdown() to stop the server gracefully
 ```
@@ -53,10 +52,9 @@ server.run().await?;
 **Run client:**
 
 ```rust
-let daemon_name = "my-cli";
 let daemon_path = "/path/to/project";
-// Automatically detects binary mtime for version checking
-let mut client = DaemonClient::connect(daemon_name, daemon_path, daemon_exe).await?;
+// Automatically detects daemon name, executable path, and binary mtime
+let mut client = DaemonClient::connect(daemon_path).await?;
 client.execute_command(command).await?;
 ```
 

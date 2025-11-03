@@ -244,12 +244,11 @@ fn print_usage() {
     println!("  (any other)    Run as client");
     println!();
     println!("Daemon options:");
-    println!("  --daemon-name <name>      Daemon name (required)");
     println!("  --daemon-path <path>      Daemon path/scope (required)");
     println!();
     println!("Examples:");
     println!("  # Start daemon");
-    println!("  cargo run --example concurrent -- daemon --daemon-name concurrent --daemon-path /tmp/test");
+    println!("  cargo run --example concurrent -- daemon --daemon-path /tmp/test");
     println!();
     println!("  # Send commands (from multiple terminals for concurrency)");
     println!("  echo \"add-task Build feature\" | cargo run --example concurrent");
@@ -258,12 +257,12 @@ fn print_usage() {
 }
 
 async fn run_daemon_mode() -> Result<()> {
-    let (daemon_name, daemon_path) = parse_daemon_args()?;
+    let daemon_path = parse_daemon_args()?;
 
     // Initialize tracing subscriber for daemon logs
     // Logs go to stderr with compact format
     // To redirect to a file instead:
-    //   let file = std::fs::File::create(format!("/tmp/daemon-{}.log", daemon_name))?;
+    //   let file = std::fs::File::create("/tmp/daemon.log")?;
     //   tracing_subscriber::fmt().with_writer(file).init();
     tracing_subscriber::fmt()
         .with_target(false)
@@ -272,14 +271,13 @@ async fn run_daemon_mode() -> Result<()> {
         .init();
 
     tracing::info!(
-        daemon_name,
         daemon_path,
         "Starting task queue daemon with concurrent request handling"
     );
 
     let handler = TaskQueueHandler::new();
-    // Automatically detects binary mtime for version checking
-    let (server, _handle) = DaemonServer::new(&daemon_name, &daemon_path, handler);
+    // Automatically detects daemon name and binary mtime
+    let (server, _handle) = DaemonServer::new(&daemon_path, handler);
     server.run().await?;
 
     Ok(())
@@ -298,19 +296,10 @@ async fn run_client_mode() -> Result<()> {
         bail!("No command provided");
     }
 
-    // Connect to daemon (auto-spawns if needed)
-    let daemon_name = "concurrent";
+    // Connect to daemon (auto-spawns if needed, auto-detects everything)
     let daemon_path = env::current_dir()?.to_string_lossy().to_string();
 
-    // Get path to this concurrent example binary
-    let mut daemon_exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    daemon_exe.push("target");
-    daemon_exe.push("debug");
-    daemon_exe.push("examples");
-    daemon_exe.push("concurrent");
-
-    // Auto-detects binary mtime for version checking
-    let mut client = DaemonClient::connect(daemon_name, &daemon_path, daemon_exe).await?;
+    let mut client = DaemonClient::connect(&daemon_path).await?;
 
     // Execute command and stream output to stdout
     client.execute_command(command).await?;

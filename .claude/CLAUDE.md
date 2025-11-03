@@ -32,15 +32,18 @@ echo "process file.txt" | cargo run --example cli
 
 **Client (`src/client.rs`)**
 - `DaemonClient` - Handles connection to daemon with automatic spawning
+- Auto-detects daemon name from binary filename
+- Auto-detects daemon executable path (current binary)
 - Auto-detects running daemons via socket existence
 - Performs version handshake using binary modification time (mtime)
 - Restarts daemon on version mismatch (client binary newer than daemon binary)
 - Uses PID files (`/tmp/{short_id}-{daemon_name}.pid`) for process cleanup
-- Requires `daemon_name` and `daemon_path` for identification
+- Requires only `daemon_path` parameter - everything else is automatic
 
 **Server (`src/server.rs`)**
 - `DaemonServer` - Background daemon that processes commands
 - `DaemonServer::new()` returns `(DaemonServer, DaemonHandle)` - default limit of 100 concurrent connections
+- Auto-detects daemon name from binary filename
 - `DaemonServer::new_with_limit()` allows custom connection limit
 - `DaemonHandle::shutdown()` gracefully stops the server; drop handle to run indefinitely
 - Concurrent processing model (multiple clients and commands simultaneously)
@@ -48,7 +51,7 @@ echo "process file.txt" | cargo run --example cli
 - Connection limiting always enabled (default: 100, configurable)
 - Streaming output via tokio duplex channel
 - Cancellation via `CancellationToken` when connection closes
-- Requires `daemon_name` and `daemon_path` parameters
+- Requires only `daemon_path` parameter
 
 **Transport (`src/transport.rs`)**
 - Unix domain sockets at `/tmp/{short_id}-{daemon_name}.sock`
@@ -122,8 +125,8 @@ Connection limiting is always enabled to prevent resource exhaustion. The defaul
 use daemon_cli::prelude::*;
 
 let handler = MyHandler::new();
-// Automatically detects binary mtime for version checking
-let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", handler);
+// Automatically detects daemon name and binary mtime
+let (server, _handle) = DaemonServer::new("/path/to/project", handler);
 // Default: max 100 concurrent connections
 ```
 
@@ -132,9 +135,8 @@ let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", handler)
 use daemon_cli::prelude::*;
 
 let handler = MyHandler::new();
-// Automatically detects binary mtime for version checking
+// Automatically detects daemon name and binary mtime
 let (server, _handle) = DaemonServer::new_with_limit(
-    "my-cli",
     "/path/to/project",
     handler,
     10  // Max 10 concurrent clients

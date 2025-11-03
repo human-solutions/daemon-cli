@@ -72,8 +72,8 @@
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
 //!     let handler = MyHandler;
-//!     // Automatically detects binary mtime for version checking
-//!     let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", handler);
+//!     // Automatically detects daemon name and binary mtime
+//!     let (server, _handle) = DaemonServer::new("/path/to/project", handler);
 //!     server.run().await?;
 //!     Ok(())
 //! }
@@ -167,6 +167,17 @@ pub fn get_build_timestamp() -> u64 {
         .duration_since(UNIX_EPOCH)
         .expect("Modification time before UNIX epoch")
         .as_secs()
+}
+
+fn auto_detect_daemon_name() -> String {
+    env::current_exe()
+        .ok()
+        .and_then(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "daemon".to_string())
 }
 
 /// Handler trait for processing commands received via stdin.
