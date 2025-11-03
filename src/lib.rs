@@ -111,7 +111,6 @@ pub use error_context::ErrorContextBuffer;
 pub use server::{DaemonHandle, DaemonServer};
 
 #[cfg(test)]
-#[path = "lib_tests.rs"]
 mod tests;
 
 /// Convenient re-exports for common daemon-cli types and traits.
