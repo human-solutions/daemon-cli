@@ -1,7 +1,6 @@
 use anyhow::Result;
 use daemon_cli::prelude::*;
-use std::time::Duration;
-use std::{env, time::Instant};
+use std::time::{Duration, Instant};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     time::sleep,
@@ -120,30 +119,4 @@ impl CommandHandler for CommandProcessor {
             }
         }
     }
-}
-
-pub fn parse_daemon_args() -> Result<String> {
-    let args: Vec<String> = env::args().collect();
-    let mut root_path = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--daemon-path" => {
-                if i + 1 < args.len() {
-                    root_path = Some(args[i + 1].clone());
-                    i += 2;
-                } else {
-                    return Err(anyhow::anyhow!("--daemon-path requires a value"));
-                }
-            }
-            _ => {
-                i += 1;
-            }
-        }
-    }
-
-    let root_path = root_path.ok_or_else(|| anyhow::anyhow!("--daemon-path is required"))?;
-
-    Ok(root_path)
 }

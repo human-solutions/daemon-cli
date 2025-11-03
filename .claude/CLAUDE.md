@@ -18,10 +18,10 @@ cargo check                    # Fast check without building
 
 ### Run Example
 ```bash
-# Start daemon manually
-cargo run --example cli -- daemon --daemon-name cli --daemon-path /tmp/test
+# Start daemon (uses current directory as scope)
+cargo run --example cli -- daemon
 
-# Execute commands (auto-spawns daemon)
+# Execute commands (auto-spawns daemon if not running)
 echo "status" | cargo run --example cli
 echo "process file.txt" | cargo run --example cli
 ```

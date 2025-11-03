@@ -12,19 +12,16 @@
 //! Usage:
 //! ```bash
 //! # Terminal 1: Start the daemon
-//! cargo run --example concurrent -- daemon --daemon-name concurrent --daemon-path /tmp/test
+//! cargo run --example concurrent -- daemon
 //!
-//! # Terminal 2-5: Send concurrent commands
+//! # Terminal 2-5: Send concurrent commands from same directory
 //! echo "add-task Build feature X" | cargo run --example concurrent
 //! echo "add-task Write tests" | cargo run --example concurrent
 //! echo "stats" | cargo run --example concurrent
 //! echo "list-tasks" | cargo run --example concurrent
 //! ```
 
-mod common;
-
 use anyhow::Result;
-use common::*;
 use daemon_cli::prelude::*;
 use std::{collections::VecDeque, env, sync::Arc};
 use tokio::{
@@ -221,14 +218,11 @@ impl CommandHandler for TaskQueueHandler {
 async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
-    if args.len() < 2 {
-        print_usage();
-        return Ok(());
-    }
-
-    match args[1].as_str() {
-        "daemon" => run_daemon_mode().await,
-        _ => run_client_mode().await,
+    // Check if first argument is "daemon", otherwise run as client
+    if args.len() >= 2 && args[1] == "daemon" {
+        run_daemon_mode().await
+    } else {
+        run_client_mode().await
     }
 }
 
@@ -237,27 +231,26 @@ fn print_usage() {
     println!("============================");
     println!("Demonstrates concurrent command handling with shared state");
     println!();
-    println!("Usage: cargo run --example concurrent -- <mode> [options]");
+    println!("Usage: cargo run --example concurrent -- [mode]");
     println!();
     println!("Modes:");
     println!("  daemon         Start daemon server");
-    println!("  (any other)    Run as client");
+    println!("  (default)      Run as client");
     println!();
-    println!("Daemon options:");
-    println!("  --daemon-path <path>      Daemon path/scope (required)");
+    println!("Note: Both daemon and client use current directory as scope");
     println!();
     println!("Examples:");
     println!("  # Start daemon");
-    println!("  cargo run --example concurrent -- daemon --daemon-path /tmp/test");
+    println!("  cargo run --example concurrent -- daemon");
     println!();
-    println!("  # Send commands (from multiple terminals for concurrency)");
+    println!("  # Send commands (from same directory as daemon)");
     println!("  echo \"add-task Build feature\" | cargo run --example concurrent");
     println!("  echo \"stats\" | cargo run --example concurrent");
     println!("  echo \"list-tasks\" | cargo run --example concurrent");
 }
 
 async fn run_daemon_mode() -> Result<()> {
-    let root_path = parse_daemon_args()?;
+    let root_path = env::current_dir()?.to_string_lossy().to_string();
 
     // Initialize tracing subscriber for daemon logs
     // Logs go to stderr with compact format
@@ -284,6 +277,8 @@ async fn run_daemon_mode() -> Result<()> {
 }
 
 async fn run_client_mode() -> Result<()> {
+    let root_path = env::current_dir()?.to_string_lossy().to_string();
+
     // Read command from stdin
     let mut stdin = io::stdin();
     let mut command = String::new();
@@ -297,8 +292,6 @@ async fn run_client_mode() -> Result<()> {
     }
 
     // Connect to daemon (auto-spawns if needed, auto-detects everything)
-    let root_path = env::current_dir()?.to_string_lossy().to_string();
-
     let mut client = DaemonClient::connect(&root_path).await?;
 
     // Execute command and stream output to stdout

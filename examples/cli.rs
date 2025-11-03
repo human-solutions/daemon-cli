@@ -10,32 +10,28 @@ use tokio::io::{self, AsyncReadExt};
 async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
-    if args.len() < 2 {
-        print_usage();
-        return Ok(());
-    }
-
-    match args[1].as_str() {
-        "daemon" => run_daemon_mode().await,
-        _ => run_client_mode().await,
+    // Check if first argument is "daemon", otherwise run as client
+    if args.len() >= 2 && args[1] == "daemon" {
+        run_daemon_mode().await
+    } else {
+        run_client_mode().await
     }
 }
 
 fn print_usage() {
     println!("daemon-cli stdin/stdout Example");
     println!("================================");
-    println!("Usage: cargo run --example cli -- <mode> [options]");
+    println!("Usage: cargo run --example cli -- [mode]");
     println!();
     println!("Modes:");
     println!("  daemon         Start daemon server");
-    println!("  (any other)    Run as client (reads stdin, sends to daemon, outputs to stdout)");
+    println!("  (default)      Run as client (reads stdin, sends to daemon, outputs to stdout)");
     println!();
-    println!("Daemon options:");
-    println!("  --daemon-path <path>      Daemon path/scope (required)");
+    println!("Note: Both daemon and client use current directory as scope");
     println!();
     println!("Examples:");
     println!("  # Start daemon");
-    println!("  cargo run --example cli -- daemon --daemon-path /tmp/test");
+    println!("  cargo run --example cli -- daemon");
     println!();
     println!("  # Execute commands via client");
     println!("  echo \"status\" | cargo run --example cli");
@@ -51,7 +47,7 @@ fn print_usage() {
 }
 
 async fn run_daemon_mode() -> Result<()> {
-    let root_path = parse_daemon_args()?;
+    let root_path = env::current_dir()?.to_string_lossy().to_string();
 
     // Initialize tracing subscriber for daemon logs
     // Logs go to stderr with compact format
@@ -75,6 +71,8 @@ async fn run_daemon_mode() -> Result<()> {
 }
 
 async fn run_client_mode() -> Result<()> {
+    let root_path = env::current_dir()?.to_string_lossy().to_string();
+
     // Read command from stdin
     let mut stdin = io::stdin();
     let mut command = String::new();
@@ -88,8 +86,6 @@ async fn run_client_mode() -> Result<()> {
     }
 
     // Connect to daemon (auto-spawns if needed, auto-detects everything)
-    let root_path = env::current_dir()?.to_string_lossy().to_string();
-
     let mut client = DaemonClient::connect(&root_path).await?;
 
     // Execute command and stream output to stdout
