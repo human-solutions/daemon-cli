@@ -149,3 +149,4 @@ When the limit is reached, new connections wait for an available slot. This is i
 # Other memory
 
 - Use the `gh` command to interact with GitHub
+- Keep commit and PR messages brief
