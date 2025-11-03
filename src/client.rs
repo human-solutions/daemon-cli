@@ -164,6 +164,7 @@ impl DaemonClient {
                     build_timestamp: daemon_ts,
                 }) if daemon_ts == build_timestamp => {
                     tracing::debug!("Version handshake successful after restart");
+                    eprintln!("Daemon restarted (binary was updated)");
                 }
                 _ => {
                     error_context.dump_to_stderr();
