@@ -27,15 +27,15 @@ fn hash_path_to_short_id(path: &str) -> String {
 }
 
 // Internal: Generate socket path for a daemon
-pub fn socket_path(daemon_name: &str, daemon_path: &str) -> PathBuf {
-    let short_id = hash_path_to_short_id(daemon_path);
+pub fn socket_path(daemon_name: &str, root_path: &str) -> PathBuf {
+    let short_id = hash_path_to_short_id(root_path);
     let temp_dir = env::temp_dir();
     temp_dir.join(format!("{short_id}-{daemon_name}.sock"))
 }
 
 // Internal: Generate PID file path for a daemon
-pub fn pid_path(daemon_name: &str, daemon_path: &str) -> PathBuf {
-    let short_id = hash_path_to_short_id(daemon_path);
+pub fn pid_path(daemon_name: &str, root_path: &str) -> PathBuf {
+    let short_id = hash_path_to_short_id(root_path);
     let temp_dir = env::temp_dir();
     temp_dir.join(format!("{short_id}-{daemon_name}.pid"))
 }
@@ -59,8 +59,8 @@ pub struct SocketServer {
 }
 
 impl SocketServer {
-    pub async fn new(daemon_name: &str, daemon_path: &str) -> Result<Self> {
-        let socket_path = socket_path(daemon_name, daemon_path);
+    pub async fn new(daemon_name: &str, root_path: &str) -> Result<Self> {
+        let socket_path = socket_path(daemon_name, root_path);
 
         // Remove existing socket file if it exists
         if socket_path.exists() {
@@ -106,8 +106,8 @@ pub struct SocketClient {
 }
 
 impl SocketClient {
-    pub async fn connect(daemon_name: &str, daemon_path: &str) -> Result<Self> {
-        let socket_path = socket_path(daemon_name, daemon_path);
+    pub async fn connect(daemon_name: &str, root_path: &str) -> Result<Self> {
+        let socket_path = socket_path(daemon_name, root_path);
         let stream = UnixStream::connect(socket_path).await?;
         Ok(Self {
             connection: SocketConnection::new(stream),
@@ -167,6 +167,6 @@ pub enum SocketMessage {
     VersionCheck { build_timestamp: u64 },
     Command(String),
     OutputChunk(Vec<u8>),
-    CommandComplete,
+    CommandComplete { exit_code: i32 },
     CommandError(String),
 }

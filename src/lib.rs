@@ -16,7 +16,7 @@
 //! - **Universal I/O**: Standard stdin/stdout streaming works with pipes and scripts
 //! - **Transparent Operation**: CLI acts as pure pipe (stdin → daemon → stdout)
 //! - **Task Cancellation**: Graceful cancellation via Ctrl+C
-//! - **Version Management**: Automatic daemon restart on version mismatch
+//! - **Version Management**: Automatic daemon restart when binary is rebuilt (mtime-based)
 //! - **Concurrent Processing**: Multiple clients can execute commands simultaneously (default limit: 100)
 //!
 //! ## Quick Start
@@ -37,12 +37,12 @@
 //!         command: &str,
 //!         mut output: impl AsyncWrite + Send + Unpin,
 //!         cancel_token: CancellationToken,
-//!     ) -> Result<()> {
+//!     ) -> Result<i32> {
 //!         // Parse and process the command
 //!         output.write_all(b"Processing: ").await?;
 //!         output.write_all(command.as_bytes()).await?;
 //!         output.write_all(b"\n").await?;
-//!         Ok(())
+//!         Ok(0)
 //!     }
 //! }
 //! ```
@@ -63,17 +63,17 @@
 //! #         command: &str,
 //! #         mut output: impl AsyncWrite + Send + Unpin,
 //! #         _cancel_token: CancellationToken,
-//! #     ) -> Result<()> {
+//! #     ) -> Result<i32> {
 //! #         output.write_all(command.as_bytes()).await?;
-//! #         Ok(())
+//! #         Ok(0)
 //! #     }
 //! # }
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
 //!     let handler = MyHandler;
-//!     let build_timestamp = 1234567890u64; // From build.rs
-//!     let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", build_timestamp, handler);
+//!     // Automatically detects daemon name and binary mtime
+//!     let (server, _handle) = DaemonServer::new("/path/to/project", handler);
 //!     server.run().await?;
 //!     Ok(())
 //! }
@@ -97,6 +97,7 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
+use std::{env, fs, time::UNIX_EPOCH};
 use tokio::io::AsyncWrite;
 use tokio_util::sync::CancellationToken;
 
@@ -110,7 +111,6 @@ pub use error_context::ErrorContextBuffer;
 pub use server::{DaemonHandle, DaemonServer};
 
 #[cfg(test)]
-#[path = "lib_tests.rs"]
 mod tests;
 
 /// Convenient re-exports for common daemon-cli types and traits.
@@ -131,6 +131,54 @@ pub mod test_utils {
     pub use crate::transport::{SocketClient, SocketMessage};
 }
 
+/// Get the modification time of the current executable binary.
+///
+/// Returns the executable's mtime as seconds since Unix epoch. This is used
+/// internally by `DaemonServer::new()` and `DaemonClient::connect()` for
+/// automatic version checking.
+///
+/// When the binary is rebuilt, its mtime changes, allowing the daemon to
+/// automatically restart on the next client connection. This approach ensures
+/// version synchronization works across all crates in your workspace,
+/// regardless of which one changed.
+///
+/// # Panics
+///
+/// Panics if the current executable path cannot be determined, the file metadata
+/// cannot be read, or the modification time is before the Unix epoch.
+///
+/// # Example
+///
+/// ```rust
+/// use daemon_cli::get_build_timestamp;
+///
+/// let timestamp = get_build_timestamp();
+/// println!("Binary was last modified at: {}", timestamp);
+/// ```
+pub fn get_build_timestamp() -> u64 {
+    let exe_path = env::current_exe().expect("Failed to get current executable path");
+    let metadata = fs::metadata(&exe_path).expect("Failed to get executable metadata");
+    let mtime = metadata
+        .modified()
+        .expect("Failed to get executable modification time");
+
+    mtime
+        .duration_since(UNIX_EPOCH)
+        .expect("Modification time before UNIX epoch")
+        .as_millis() as u64
+}
+
+fn auto_detect_daemon_name() -> String {
+    env::current_exe()
+        .ok()
+        .and_then(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "daemon".to_string())
+}
+
 /// Handler trait for processing commands received via stdin.
 ///
 /// Implement this trait on your daemon struct to define how commands
@@ -141,7 +189,7 @@ pub mod test_utils {
 /// Handlers may be invoked concurrently for multiple client connections.
 /// The daemon clones your handler (via `Clone`) for each connection and
 /// spawns a separate task to handle it. If your handler accesses shared
-/// mutable state, use synchronization primitives like `Arc<Mutex<T>>` or
+/// mutable state, use synchronization primitives like [`Arc<Mutex<T>>`](std::sync::Arc) or
 /// message-passing channels.
 ///
 /// For serial execution of commands, implement queuing/routing logic within
@@ -163,7 +211,7 @@ pub mod test_utils {
 ///         command: &str,
 ///         mut output: impl AsyncWrite + Send + Unpin,
 ///         cancel_token: CancellationToken,
-///     ) -> Result<()> {
+///     ) -> Result<i32> {
 ///         // Parse the command
 ///         let parts: Vec<&str> = command.trim().split_whitespace().collect();
 ///
@@ -178,14 +226,15 @@ pub mod test_utils {
 ///                 }
 ///
 ///                 output.write_all(b"Done!\n").await?;
-///                 Ok(())
+///                 Ok(0)
 ///             }
 ///             Some(&"status") => {
 ///                 output.write_all(b"Ready\n").await?;
-///                 Ok(())
+///                 Ok(0)
 ///             }
 ///             _ => {
-///                 Err(anyhow::anyhow!("Unknown command"))
+///                 output.write_all(b"Unknown command\n").await?;
+///                 Ok(127)  // Exit code 127 for unknown command
 ///             }
 ///         }
 ///     }
@@ -200,10 +249,13 @@ pub trait CommandHandler: Send + Sync {
     ///
     /// Write output incrementally via `output`. Long-running operations should
     /// check `cancel_token.is_cancelled()` to handle graceful cancellation.
+    ///
+    /// Returns an exit code (0 for success, 1-255 for errors). For unrecoverable
+    /// errors, return `Err(e)` which will be reported as exit code 1.
     async fn handle(
         &self,
         command: &str,
         output: impl AsyncWrite + Send + Unpin,
         cancel_token: CancellationToken,
-    ) -> Result<()>;
+    ) -> Result<i32>;
 }

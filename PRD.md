@@ -66,7 +66,7 @@ trait CommandHandler {
         command: &str,           // Full stdin as string
         output: impl AsyncWrite, // Stream output here
         cancel: CancellationToken // For Ctrl+C handling
-    ) -> Result<()>;
+    ) -> Result<i32>;           // Return exit code (0-255)
 }
 ```
 
@@ -74,7 +74,7 @@ trait CommandHandler {
 - Parse the command string (any format, handler decides)
 - Stream output bytes via the `AsyncWrite` interface
 - Respond to cancellation token by stopping gracefully
-- Return `Result` for error handling
+- Return exit code: `Ok(0)` for success, `Ok(1-255)` for errors, `Err(e)` for unrecoverable failures
 
 **Framework Responsibilities:**
 - Read CLI stdin and deliver as command string
@@ -113,14 +113,15 @@ print(result.stdout)
 
 ### Message Types
 
-The socket protocol uses four message types:
+The socket protocol uses five message types:
 
 1. **VersionCheck** - Handshake with build timestamps
 2. **Command(String)** - CLI sends full stdin to daemon (once)
 3. **OutputChunk(Bytes)** - Daemon streams output to CLI (multiple)
-4. **CommandError(String)** - Daemon reports handler error before closing
+4. **CommandComplete { exit_code: i32 }** - Daemon signals success with exit code
+5. **CommandError(String)** - Daemon reports unrecoverable error before closing
 
-Connection close signals completion (no explicit message needed).
+Exit codes from handlers are transmitted via `CommandComplete` message.
 
 ### Communication Flow
 
@@ -129,8 +130,8 @@ Connection close signals completion (no explicit message needed).
 2. Version handshake (restart daemon if mismatch)
 3. CLI sends `Command` with stdin content
 4. Daemon sends `OutputChunk` messages as output is produced
-5. Daemon closes connection on success, or sends `CommandError` then closes on failure
-6. CLI detects EOF and exits
+5. Daemon sends `CommandComplete { exit_code }` on success, or `CommandError` on failure
+6. CLI receives exit code and sets process exit status accordingly
 
 **Cancellation (Ctrl+C):**
 1. CLI closes connection immediately
@@ -152,7 +153,7 @@ Connection close signals completion (no explicit message needed).
 - **Platform**: Unix-like systems only (Linux, macOS) via Unix domain sockets
 - **Connection limits**: Default 100 concurrent connections, configurable per daemon
 - **No structured output**: Framework doesn't enforce output format (handler decides)
-- **Daemon identification**: Requires unique `daemon_name` and `daemon_path` for socket isolation
+- **Daemon identification**: Requires unique `daemon_name` and `root_path` for socket isolation
 
 ### Acceptable Limitations
 
@@ -165,6 +166,7 @@ Connection close signals completion (no explicit message needed).
 Not in current scope, but potential future enhancements:
 
 - ~~Multi-client support with request queuing~~ (✅ Implemented: concurrent client support with connection limiting)
+- ~~Custom exit codes~~ (✅ Implemented: handlers return i32 exit codes, transmitted via CommandComplete)
 - Interactive command mode with prompt/response cycles
 - Structured output format enforcement
 - Windows support via named pipes

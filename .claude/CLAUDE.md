@@ -18,10 +18,10 @@ cargo check                    # Fast check without building
 
 ### Run Example
 ```bash
-# Start daemon manually
-cargo run --example cli -- daemon --daemon-name cli --daemon-path /tmp/test
+# Start daemon (uses current directory as scope)
+cargo run --example cli -- daemon
 
-# Execute commands (auto-spawns daemon)
+# Execute commands (auto-spawns daemon if not running)
 echo "status" | cargo run --example cli
 echo "process file.txt" | cargo run --example cli
 ```
@@ -32,15 +32,18 @@ echo "process file.txt" | cargo run --example cli
 
 **Client (`src/client.rs`)**
 - `DaemonClient` - Handles connection to daemon with automatic spawning
+- Auto-detects daemon name from binary filename
+- Auto-detects daemon executable path (current binary)
 - Auto-detects running daemons via socket existence
-- Performs version handshake using build timestamps
-- Restarts daemon on version mismatch
+- Performs version handshake using binary modification time (mtime)
+- Restarts daemon on version mismatch (client binary newer than daemon binary)
 - Uses PID files (`/tmp/{short_id}-{daemon_name}.pid`) for process cleanup
-- Requires `daemon_name` and `daemon_path` for identification
+- Requires only `root_path` parameter - everything else is automatic
 
 **Server (`src/server.rs`)**
 - `DaemonServer` - Background daemon that processes commands
 - `DaemonServer::new()` returns `(DaemonServer, DaemonHandle)` - default limit of 100 concurrent connections
+- Auto-detects daemon name from binary filename
 - `DaemonServer::new_with_limit()` allows custom connection limit
 - `DaemonHandle::shutdown()` gracefully stops the server; drop handle to run indefinitely
 - Concurrent processing model (multiple clients and commands simultaneously)
@@ -48,11 +51,11 @@ echo "process file.txt" | cargo run --example cli
 - Connection limiting always enabled (default: 100, configurable)
 - Streaming output via tokio duplex channel
 - Cancellation via `CancellationToken` when connection closes
-- Requires `daemon_name` and `daemon_path` parameters
+- Requires only `root_path` parameter
 
 **Transport (`src/transport.rs`)**
 - Unix domain sockets at `/tmp/{short_id}-{daemon_name}.sock`
-- `short_id` is a 4-character base62 hash of `daemon_path` for uniqueness
+- `short_id` is a 4-character base62 hash of `root_path` for uniqueness
 - Length-delimited framing using tokio-util codec
 - Message types: `VersionCheck`, `Command`, `OutputChunk`, `CommandError`
 - Socket permissions: 0600 (owner only)
@@ -60,10 +63,12 @@ echo "process file.txt" | cargo run --example cli
 ### Key Design Patterns
 
 **Version Synchronization Flow:**
-1. Client tries to connect to existing socket
-2. If socket exists, performs version handshake
-3. On mismatch: cleans up socket + PID file, spawns new daemon
-4. New daemon performs fresh handshake
+1. Client automatically reads its own binary's modification time (mtime) at launch (via `DaemonClient::connect()`)
+2. Client tries to connect to existing socket
+3. If socket exists, performs version handshake by comparing mtimes
+4. On mismatch (client mtime > daemon mtime): cleans up socket + PID file, spawns new daemon
+5. New daemon automatically reads its own binary mtime at startup (via `DaemonServer::new()`) and performs fresh handshake
+6. Version checking ensures daemon automatically restarts when binary is rebuilt - no user action required
 
 **Command Execution Flow:**
 1. Client sends `Command` message with stdin content
@@ -120,7 +125,8 @@ Connection limiting is always enabled to prevent resource exhaustion. The defaul
 use daemon_cli::prelude::*;
 
 let handler = MyHandler::new();
-let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", build_timestamp, handler);
+// Automatically detects daemon name and binary mtime
+let (server, _handle) = DaemonServer::new("/path/to/project", handler);
 // Default: max 100 concurrent connections
 ```
 
@@ -129,10 +135,9 @@ let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", build_ti
 use daemon_cli::prelude::*;
 
 let handler = MyHandler::new();
+// Automatically detects daemon name and binary mtime
 let (server, _handle) = DaemonServer::new_with_limit(
-    "my-cli",
     "/path/to/project",
-    build_timestamp,
     handler,
     10  // Max 10 concurrent clients
 );

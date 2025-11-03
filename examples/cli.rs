@@ -1,6 +1,6 @@
 mod common;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use common::*;
 use daemon_cli::prelude::*;
 use std::env;
@@ -10,34 +10,28 @@ use tokio::io::{self, AsyncReadExt};
 async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
-    if args.len() < 2 {
-        print_usage();
-        return Ok(());
-    }
-
-    match args[1].as_str() {
-        "daemon" => run_daemon_mode().await,
-        _ => run_client_mode().await,
+    // Check if first argument is "daemon", otherwise run as client
+    if args.len() >= 2 && args[1] == "daemon" {
+        run_daemon_mode().await
+    } else {
+        run_client_mode().await
     }
 }
 
 fn print_usage() {
     println!("daemon-cli stdin/stdout Example");
     println!("================================");
-    println!("Usage: cargo run --example cli -- <mode> [options]");
+    println!("Usage: cargo run --example cli -- [mode]");
     println!();
     println!("Modes:");
     println!("  daemon         Start daemon server");
-    println!("  (any other)    Run as client (reads stdin, sends to daemon, outputs to stdout)");
+    println!("  (default)      Run as client (reads stdin, sends to daemon, outputs to stdout)");
     println!();
-    println!("Daemon options:");
-    println!("  --daemon-name <name>      Daemon name (required)");
-    println!("  --daemon-path <path>      Daemon path/scope (required)");
-    println!("  --build-timestamp <time>  Build timestamp (optional)");
+    println!("Note: Both daemon and client use current directory as scope");
     println!();
     println!("Examples:");
     println!("  # Start daemon");
-    println!("  cargo run --example cli -- daemon --daemon-name cli --daemon-path /tmp/test");
+    println!("  cargo run --example cli -- daemon");
     println!();
     println!("  # Execute commands via client");
     println!("  echo \"status\" | cargo run --example cli");
@@ -53,12 +47,12 @@ fn print_usage() {
 }
 
 async fn run_daemon_mode() -> Result<()> {
-    let (daemon_name, daemon_path, build_timestamp) = parse_daemon_args()?;
+    let root_path = env::current_dir()?.to_string_lossy().to_string();
 
     // Initialize tracing subscriber for daemon logs
     // Logs go to stderr with compact format
     // To redirect to a file instead:
-    //   let file = std::fs::File::create(format!("/tmp/daemon-{}.log", daemon_name))?;
+    //   let file = std::fs::File::create("/tmp/daemon.log")?;
     //   tracing_subscriber::fmt().with_writer(file).init();
     tracing_subscriber::fmt()
         .with_target(false)
@@ -66,16 +60,19 @@ async fn run_daemon_mode() -> Result<()> {
         .compact()
         .init();
 
-    tracing::info!(daemon_name, daemon_path, build_timestamp, "Starting daemon");
+    tracing::info!(root_path, "Starting daemon");
 
     let handler = CommandProcessor::new();
-    let (server, _handle) = DaemonServer::new(&daemon_name, &daemon_path, build_timestamp, handler);
+    // Automatically detects daemon name and binary mtime
+    let (server, _handle) = DaemonServer::new(&root_path, handler);
     server.run().await?;
 
     Ok(())
 }
 
 async fn run_client_mode() -> Result<()> {
+    let root_path = env::current_dir()?.to_string_lossy().to_string();
+
     // Read command from stdin
     let mut stdin = io::stdin();
     let mut command = String::new();
@@ -85,19 +82,15 @@ async fn run_client_mode() -> Result<()> {
     if command.trim().is_empty() {
         eprintln!("Error: No command provided via stdin");
         print_usage();
-        bail!("No command provided");
+        std::process::exit(1);
     }
 
-    // Connect to daemon (auto-spawns if needed)
-    let daemon_name = "cli";
-    let daemon_path = env::current_dir()?.to_string_lossy().to_string();
-    let daemon_exe = get_daemon_path();
-    let build_timestamp = get_build_timestamp();
-
-    let mut client = DaemonClient::connect(daemon_name, &daemon_path, daemon_exe, build_timestamp).await?;
+    // Connect to daemon (auto-spawns if needed, auto-detects everything)
+    let mut client = DaemonClient::connect(&root_path).await?;
 
     // Execute command and stream output to stdout
-    client.execute_command(command).await?;
+    let exit_code = client.execute_command(command).await?;
 
-    Ok(())
+    // Exit with the command's exit code
+    std::process::exit(exit_code);
 }

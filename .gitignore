@@ -4,3 +4,4 @@ Cargo.lock
 /*.md
 !/README.md
 !/PRD.md
+!/CHANGELOG.md

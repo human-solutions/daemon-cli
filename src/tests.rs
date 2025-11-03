@@ -21,9 +21,9 @@ impl CommandHandler for TestHandler {
         _command: &str,
         mut output: impl AsyncWrite + Send + Unpin,
         _cancel: CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         output.write_all(self.output_text.as_bytes()).await?;
-        Ok(())
+        Ok(0)
     }
 }
 
@@ -72,6 +72,17 @@ fn test_socket_message_serialization() {
         _ => panic!("Wrong message type"),
     }
 
+    // Test CommandComplete message
+    let complete_msg = SocketMessage::CommandComplete { exit_code: 0 };
+    let serialized = serde_json::to_string(&complete_msg).unwrap();
+    let deserialized: SocketMessage = serde_json::from_str(&serialized).unwrap();
+    match deserialized {
+        SocketMessage::CommandComplete { exit_code } => {
+            assert_eq!(exit_code, 0);
+        }
+        _ => panic!("Wrong message type"),
+    }
+
     // Test CommandError message
     let error_msg = SocketMessage::CommandError("test error".to_string());
     let serialized = serde_json::to_string(&error_msg).unwrap();
@@ -92,6 +103,7 @@ async fn test_handler_basic_output() {
 
     let result = handler.handle("test", &mut output, cancel).await;
     assert!(result.is_ok());
+    assert_eq!(result.unwrap(), 0);  // Success exit code
     assert_eq!(String::from_utf8(output).unwrap(), "Hello, World!");
 }
 
@@ -108,7 +120,7 @@ async fn test_handler_with_cancellation() {
             _command: &str,
             mut output: impl AsyncWrite + Send + Unpin,
             cancel: CancellationToken,
-        ) -> Result<()> {
+        ) -> Result<i32> {
             // Simulate work with cancellation checking
             for i in 0..10 {
                 if cancel.is_cancelled() {
@@ -117,7 +129,7 @@ async fn test_handler_with_cancellation() {
                 }
                 output.write_all(format!("Step {}\n", i).as_bytes()).await?;
             }
-            Ok(())
+            Ok(0)
         }
     }
 

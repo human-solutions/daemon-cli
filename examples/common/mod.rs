@@ -1,11 +1,6 @@
 use anyhow::Result;
 use daemon_cli::prelude::*;
-use std::time::Duration;
-use std::{
-    env,
-    path::PathBuf,
-    time::{Instant, SystemTime, UNIX_EPOCH},
-};
+use std::time::{Duration, Instant};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     time::sleep,
@@ -33,20 +28,20 @@ impl CommandHandler for CommandProcessor {
         command: &str,
         mut output: impl AsyncWrite + Send + Unpin,
         cancel_token: CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         let parts: Vec<&str> = command.trim().split_whitespace().collect();
 
         match parts.get(0) {
             Some(&"status") => {
                 output.write_all(b"Daemon ready for processing\n").await?;
-                Ok(())
+                Ok(0)
             }
 
             Some(&"uptime") => {
                 let uptime = self.startup_time.elapsed();
                 let message = format!("Daemon uptime: {:.2}s\n", uptime.as_secs_f64());
                 output.write_all(message.as_bytes()).await?;
-                Ok(())
+                Ok(0)
             }
 
             Some(&"process") => {
@@ -74,7 +69,7 @@ impl CommandHandler for CommandProcessor {
                 output
                     .write_all(format!("Successfully processed {}\n", filename).as_bytes())
                     .await?;
-                Ok(())
+                Ok(0)
             }
 
             Some(&"long") => {
@@ -107,7 +102,7 @@ impl CommandHandler for CommandProcessor {
                 }
 
                 output.write_all(b"Task completed\n").await?;
-                Ok(())
+                Ok(0)
             }
 
             Some(&"echo") => {
@@ -115,84 +110,13 @@ impl CommandHandler for CommandProcessor {
                 let message = parts[1..].join(" ");
                 output.write_all(message.as_bytes()).await?;
                 output.write_all(b"\n").await?;
-                Ok(())
+                Ok(0)
             }
 
-            _ => Err(anyhow::anyhow!(
-                "Unknown command. Available: status, uptime, process [file], long [seconds], echo [message]"
-            )),
-        }
-    }
-}
-
-#[allow(dead_code)]
-pub fn get_daemon_path() -> PathBuf {
-    let mut exe_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    exe_path.push("target");
-    exe_path.push("debug");
-    exe_path.push("examples");
-    exe_path.push("cli");
-
-    if cfg!(windows) {
-        exe_path.set_extension("exe");
-    }
-
-    exe_path
-}
-
-pub fn get_build_timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
-
-pub fn parse_daemon_args() -> Result<(String, String, u64)> {
-    let args: Vec<String> = env::args().collect();
-    let mut daemon_name = None;
-    let mut daemon_path = None;
-    let mut build_timestamp = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--daemon-name" => {
-                if i + 1 < args.len() {
-                    daemon_name = Some(args[i + 1].clone());
-                    i += 2;
-                } else {
-                    return Err(anyhow::anyhow!("--daemon-name requires a value"));
-                }
-            }
-            "--daemon-path" => {
-                if i + 1 < args.len() {
-                    daemon_path = Some(args[i + 1].clone());
-                    i += 2;
-                } else {
-                    return Err(anyhow::anyhow!("--daemon-path requires a value"));
-                }
-            }
-            "--build-timestamp" => {
-                if i + 1 < args.len() {
-                    build_timestamp = Some(
-                        args[i + 1]
-                            .parse::<u64>()
-                            .map_err(|_| anyhow::anyhow!("Invalid build-timestamp"))?,
-                    );
-                    i += 2;
-                } else {
-                    return Err(anyhow::anyhow!("--build-timestamp requires a value"));
-                }
-            }
             _ => {
-                i += 1;
+                output.write_all(b"Unknown command. Available: status, uptime, process [file], long [seconds], echo [message]\n").await?;
+                Ok(127)  // Exit code 127 for unknown command
             }
         }
     }
-
-    let daemon_name = daemon_name.ok_or_else(|| anyhow::anyhow!("--daemon-name is required"))?;
-    let daemon_path = daemon_path.ok_or_else(|| anyhow::anyhow!("--daemon-path is required"))?;
-    let build_timestamp = build_timestamp.unwrap_or_else(get_build_timestamp);
-
-    Ok((daemon_name, daemon_path, build_timestamp))
 }
