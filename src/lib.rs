@@ -165,7 +165,7 @@ pub fn get_build_timestamp() -> u64 {
     mtime
         .duration_since(UNIX_EPOCH)
         .expect("Modification time before UNIX epoch")
-        .as_secs()
+        .as_millis() as u64
 }
 
 fn auto_detect_daemon_name() -> String {
