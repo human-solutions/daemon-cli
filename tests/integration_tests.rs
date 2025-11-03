@@ -39,7 +39,8 @@ async fn start_test_daemon_with_limit<H: CommandHandler + Clone + 'static>(
     handler: H,
     max_connections: usize,
 ) -> (DaemonHandle, JoinHandle<()>) {
-    let (server, shutdown_handle) = DaemonServer::new_with_limit(daemon_id, build_timestamp, handler, max_connections);
+    let (server, shutdown_handle) =
+        DaemonServer::new_with_limit(daemon_id, build_timestamp, handler, max_connections);
     let join_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -400,9 +401,7 @@ async fn test_concurrent_stress_10_plus_clients() -> Result<()> {
         let handle = spawn(async move {
             let mut client =
                 DaemonClient::connect(daemon_id, daemon_exe_clone, build_timestamp).await?;
-            client
-                .execute_command(format!("stress-test-{}", i))
-                .await
+            client.execute_command(format!("stress-test-{}", i)).await
         });
         client_handles.push(handle);
     }
@@ -464,9 +463,7 @@ async fn test_connection_limit() -> Result<()> {
         let handle = spawn(async move {
             let mut client =
                 DaemonClient::connect(daemon_id, daemon_exe_clone, build_timestamp).await?;
-            client
-                .execute_command(format!("limit-test-{}", i))
-                .await
+            client.execute_command(format!("limit-test-{}", i)).await
         });
         client_handles.push(handle);
         // Small delay to stagger connections slightly

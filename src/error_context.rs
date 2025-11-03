@@ -59,7 +59,10 @@ impl ErrorContextBuffer {
             return;
         }
 
-        eprintln!("\n--- Client Debug Log (last {} entries) ---", entries.len());
+        eprintln!(
+            "\n--- Client Debug Log (last {} entries) ---",
+            entries.len()
+        );
         for entry in entries.iter() {
             let elapsed = entry.timestamp.duration_since(self.start_time);
             eprintln!(
@@ -119,8 +122,7 @@ where
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
 
-        self.buffer
-            .add_entry(*metadata.level(), visitor.message);
+        self.buffer.add_entry(*metadata.level(), visitor.message);
     }
 }
 

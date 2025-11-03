@@ -78,7 +78,9 @@ impl DaemonClient {
             Self::cleanup_stale_processes(daemon_id).await;
 
             // Spawn new daemon
-            match Self::spawn_and_wait_for_ready(daemon_id, &daemon_executable, build_timestamp).await {
+            match Self::spawn_and_wait_for_ready(daemon_id, &daemon_executable, build_timestamp)
+                .await
+            {
                 Ok(client) => client,
                 Err(e) => {
                     error_context.dump_to_stderr();
@@ -113,7 +115,13 @@ impl DaemonClient {
             Self::cleanup_stale_processes(daemon_id).await;
 
             // Spawn new daemon with correct version
-            socket_client = match Self::spawn_and_wait_for_ready(daemon_id, &daemon_executable, build_timestamp).await {
+            socket_client = match Self::spawn_and_wait_for_ready(
+                daemon_id,
+                &daemon_executable,
+                build_timestamp,
+            )
+            .await
+            {
                 Ok(client) => client,
                 Err(e) => {
                     error_context.dump_to_stderr();
@@ -171,7 +179,10 @@ impl DaemonClient {
                 Err(e) if e.to_string().contains("signal: 15") && retry_attempt < 2 => {
                     // Daemon was killed during startup, likely by concurrent test cleanup
                     // Wait a bit and retry
-                    tracing::debug!(retry = retry_attempt + 1, "Daemon killed during startup, retrying");
+                    tracing::debug!(
+                        retry = retry_attempt + 1,
+                        "Daemon killed during startup, retrying"
+                    );
                     sleep(Duration::from_millis(300)).await;
                     continue;
                 }
@@ -279,11 +290,7 @@ impl DaemonClient {
         let mut stdout = tokio::io::stdout();
 
         loop {
-            match self
-                .socket_client
-                .receive_message::<SocketMessage>()
-                .await
-            {
+            match self.socket_client.receive_message::<SocketMessage>().await {
                 Ok(Some(SocketMessage::OutputChunk(chunk))) => {
                     // Write chunk to stdout
                     stdout.write_all(&chunk).await?;

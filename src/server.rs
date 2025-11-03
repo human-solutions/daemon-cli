@@ -2,14 +2,22 @@ use crate::transport::{SocketMessage, SocketServer};
 use crate::*;
 use anyhow::Result;
 use std::{
-    fs, io::ErrorKind, process,
+    fs,
+    io::ErrorKind,
+    process,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
-use tokio::{io::AsyncReadExt, select, spawn, sync::{oneshot, Semaphore}, time::sleep};
+use tokio::{
+    io::AsyncReadExt,
+    select, spawn,
+    sync::{Semaphore, oneshot},
+    time::sleep,
+};
+use tracing::Instrument;
 
 /// Global client connection counter for logging context
 static CLIENT_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -245,15 +253,13 @@ where
                     let client_id = CLIENT_COUNTER.fetch_add(1, Ordering::Relaxed);
 
                     // Handle this client connection
-                    spawn(async move {
-                        // Permit is held for the lifetime of this task and released when dropped
-                        let _permit = permit;
+                    // Instrument with client span to properly handle async .await points
+                    spawn(
+                        async move {
+                            // Permit is held for the lifetime of this task and released when dropped
+                            let _permit = permit;
 
-                        // Create span for this client connection
-                        let client_span = tracing::info_span!("client", id = client_id);
-                        let _client_guard = client_span.enter();
-
-                        tracing::debug!("Connection accepted");
+                            tracing::debug!("Connection accepted");
 
                         // Version handshake
                         if let Ok(Some(SocketMessage::VersionCheck {
@@ -305,7 +311,7 @@ where
                         let cancel_token = tokio_util::sync::CancellationToken::new();
                         let cancel_token_clone = cancel_token.clone();
 
-                        // Spawn handler task
+                        // Spawn handler task (will not inherit span by default)
                         let mut handler_task = Some(spawn(async move {
                             handler
                                 .handle(&command, output_writer, cancel_token_clone)
@@ -416,7 +422,9 @@ where
                                 }
                             }
                         }
-                    });
+                    }
+                    .instrument(tracing::info_span!("client", id = client_id)),
+                );
                 }
                 Some(Err(e)) => {
                     // Try to downcast to std::io::Error to inspect error kind

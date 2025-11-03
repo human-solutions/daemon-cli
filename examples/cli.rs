@@ -65,11 +65,7 @@ async fn run_daemon_mode() -> Result<()> {
         .compact()
         .init();
 
-    tracing::info!(
-        daemon_id,
-        build_timestamp,
-        "Starting daemon"
-    );
+    tracing::info!(daemon_id, build_timestamp, "Starting daemon");
 
     let handler = CommandProcessor::new();
     let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
