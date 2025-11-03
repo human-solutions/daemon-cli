@@ -29,12 +29,13 @@ impl CommandHandler for SimpleHandler {
 
 #[tokio::test]
 async fn test_version_handshake_success() -> Result<()> {
-    let daemon_id = 6001;
+    let daemon_name = "test-6001";
+    let daemon_path = "/tmp/test-6001";
     let build_timestamp = 1111111111;
     let handler = SimpleHandler;
 
     // Start server with specific build timestamp
-    let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
+    let (server, _handle) = DaemonServer::new(daemon_name, daemon_path, build_timestamp, handler);
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -42,7 +43,7 @@ async fn test_version_handshake_success() -> Result<()> {
     sleep(Duration::from_millis(100)).await;
 
     // Connect with matching build timestamp
-    let mut client = SocketClient::connect(daemon_id).await?;
+    let mut client = SocketClient::connect(daemon_name, daemon_path).await?;
 
     // Send version check
     client
@@ -66,13 +67,14 @@ async fn test_version_handshake_success() -> Result<()> {
 
 #[tokio::test]
 async fn test_version_mismatch_detection() -> Result<()> {
-    let daemon_id = 6002;
+    let daemon_name = "test-6002";
+    let daemon_path = "/tmp/test-6002";
     let daemon_build_timestamp = 2222222222;
     let client_build_timestamp = 3333333333;
     let handler = SimpleHandler;
 
     // Start server with one timestamp
-    let (server, _handle) = DaemonServer::new(daemon_id, daemon_build_timestamp, handler);
+    let (server, _handle) = DaemonServer::new(daemon_name, daemon_path, daemon_build_timestamp, handler);
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -80,7 +82,7 @@ async fn test_version_mismatch_detection() -> Result<()> {
     sleep(Duration::from_millis(100)).await;
 
     // Connect with different build timestamp
-    let mut client = SocketClient::connect(daemon_id).await?;
+    let mut client = SocketClient::connect(daemon_name, daemon_path).await?;
 
     // Send version check with mismatched timestamp
     client
@@ -111,12 +113,13 @@ async fn test_version_mismatch_detection() -> Result<()> {
 
 #[tokio::test]
 async fn test_multiple_version_handshakes() -> Result<()> {
-    let daemon_id = 6003;
+    let daemon_name = "test-6003";
+    let daemon_path = "/tmp/test-6003";
     let build_timestamp = 4444444444;
     let handler = SimpleHandler;
 
     // Start server
-    let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
+    let (server, _handle) = DaemonServer::new(daemon_name, daemon_path, build_timestamp, handler);
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -125,7 +128,7 @@ async fn test_multiple_version_handshakes() -> Result<()> {
 
     // Connect and perform handshake multiple times
     for _ in 0..3 {
-        let mut client = SocketClient::connect(daemon_id).await?;
+        let mut client = SocketClient::connect(daemon_name, daemon_path).await?;
 
         // Perform handshake
         client
@@ -154,19 +157,20 @@ async fn test_multiple_version_handshakes() -> Result<()> {
 
 #[tokio::test]
 async fn test_version_handshake_before_command() -> Result<()> {
-    let daemon_id = 6004;
+    let daemon_name = "test-6004";
+    let daemon_path = "/tmp/test-6004";
     let build_timestamp = 5555555555;
     let handler = SimpleHandler;
 
     // Start server
-    let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
+    let (server, _handle) = DaemonServer::new(daemon_name, daemon_path, build_timestamp, handler);
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
 
     sleep(Duration::from_millis(100)).await;
 
-    let mut client = SocketClient::connect(daemon_id).await?;
+    let mut client = SocketClient::connect(daemon_name, daemon_path).await?;
 
     // First, perform version handshake
     client
@@ -196,19 +200,20 @@ async fn test_version_handshake_before_command() -> Result<()> {
 
 #[tokio::test]
 async fn test_command_without_handshake_fails() -> Result<()> {
-    let daemon_id = 6005;
+    let daemon_name = "test-6005";
+    let daemon_path = "/tmp/test-6005";
     let build_timestamp = 6666666666;
     let handler = SimpleHandler;
 
     // Start server
-    let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
+    let (server, _handle) = DaemonServer::new(daemon_name, daemon_path, build_timestamp, handler);
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
 
     sleep(Duration::from_millis(100)).await;
 
-    let mut client = SocketClient::connect(daemon_id).await?;
+    let mut client = SocketClient::connect(daemon_name, daemon_path).await?;
 
     // Try to send command without handshake
     // The server expects VersionCheck first, so it should close the connection
@@ -228,12 +233,13 @@ async fn test_command_without_handshake_fails() -> Result<()> {
 
 #[tokio::test]
 async fn test_concurrent_version_handshakes() -> Result<()> {
-    let daemon_id = 6006;
+    let daemon_name = "test-6006";
+    let daemon_path = "/tmp/test-6006";
     let build_timestamp = 7777777777;
     let handler = SimpleHandler;
 
     // Start server
-    let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
+    let (server, _handle) = DaemonServer::new(daemon_name, daemon_path, build_timestamp, handler);
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -244,10 +250,12 @@ async fn test_concurrent_version_handshakes() -> Result<()> {
     let mut handles = vec![];
 
     for i in 0..3 {
+        let daemon_name_clone = daemon_name.to_string();
+        let daemon_path_clone = daemon_path.to_string();
         let handle = spawn(async move {
             sleep(Duration::from_millis(i * 20)).await; // Stagger connections
 
-            let mut client = SocketClient::connect(daemon_id).await?;
+            let mut client = SocketClient::connect(&daemon_name_clone, &daemon_path_clone).await?;
 
             client
                 .send_message(&SocketMessage::VersionCheck { build_timestamp })

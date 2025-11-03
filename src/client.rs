@@ -20,7 +20,7 @@ use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
 ///
 /// // Actual usage pattern (requires daemon binary):
 ///  # tokio_test::block_on(async {
-///      let Ok(mut client) = DaemonClient::connect(1000, daemon_exe, build_timestamp).await else {
+///      let Ok(mut client) = DaemonClient::connect("cli", "/path/to/project", daemon_exe, build_timestamp).await else {
 ///         // handle error...
 ///         return;
 ///      };
@@ -31,8 +31,10 @@ use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
 /// ```
 pub struct DaemonClient {
     socket_client: SocketClient,
-    /// Unique identifier for this daemon instance
-    pub daemon_id: u64,
+    /// Daemon name (e.g., CLI tool name)
+    pub daemon_name: String,
+    /// Daemon path (used as unique identifier/scope)
+    pub daemon_path: String,
     /// Path to the daemon executable for spawning
     pub daemon_executable: PathBuf,
     /// Build timestamp for version compatibility checking
@@ -47,19 +49,20 @@ impl DaemonClient {
     /// Handles daemon detection, spawning, readiness waiting, and version
     /// handshake. Restarts daemon on version mismatch.
     pub async fn connect(
-        daemon_id: u64,
+        daemon_name: &str,
+        daemon_path: &str,
         daemon_executable: PathBuf,
         build_timestamp: u64,
     ) -> Result<Self> {
         // Get or initialize the global error context buffer (shared across all clients)
         let error_context = get_or_init_global_error_context();
 
-        tracing::debug!(daemon_id, "Connecting to daemon");
+        tracing::debug!(daemon_name, daemon_path, "Connecting to daemon");
 
         // Try to connect to existing daemon first
-        let socket_path = socket_path(daemon_id);
+        let socket_path = socket_path(daemon_name, daemon_path);
 
-        let mut socket_client = if let Ok(existing_client) = SocketClient::connect(daemon_id).await
+        let mut socket_client = if let Ok(existing_client) = SocketClient::connect(daemon_name, daemon_path).await
         {
             // Daemon is already running and responsive - use it
             tracing::debug!("Connected to existing daemon");
@@ -75,10 +78,10 @@ impl DaemonClient {
             }
 
             // Kill any zombie processes (best effort)
-            Self::cleanup_stale_processes(daemon_id).await;
+            Self::cleanup_stale_processes(daemon_name, daemon_path).await;
 
             // Spawn new daemon
-            match Self::spawn_and_wait_for_ready(daemon_id, &daemon_executable, build_timestamp)
+            match Self::spawn_and_wait_for_ready(daemon_name, daemon_path, &daemon_executable, build_timestamp)
                 .await
             {
                 Ok(client) => client,
@@ -112,11 +115,12 @@ impl DaemonClient {
 
             // Clean up and restart
             let _ = fs::remove_file(&socket_path);
-            Self::cleanup_stale_processes(daemon_id).await;
+            Self::cleanup_stale_processes(daemon_name, daemon_path).await;
 
             // Spawn new daemon with correct version
             socket_client = match Self::spawn_and_wait_for_ready(
-                daemon_id,
+                daemon_name,
+                daemon_path,
                 &daemon_executable,
                 build_timestamp,
             )
@@ -152,7 +156,8 @@ impl DaemonClient {
 
         Ok(Self {
             socket_client,
-            daemon_id,
+            daemon_name: daemon_name.to_string(),
+            daemon_path: daemon_path.to_string(),
             daemon_executable,
             build_timestamp,
             error_context,
@@ -160,7 +165,8 @@ impl DaemonClient {
     }
 
     async fn spawn_and_wait_for_ready(
-        daemon_id: u64,
+        daemon_name: &str,
+        daemon_path: &str,
         daemon_executable: &PathBuf,
         build_timestamp: u64,
     ) -> Result<SocketClient> {
@@ -169,7 +175,7 @@ impl DaemonClient {
         // Retry daemon spawning to handle race conditions with concurrent test cleanup
         for retry_attempt in 0..3 {
             let result =
-                Self::try_spawn_daemon(daemon_id, daemon_executable, build_timestamp).await;
+                Self::try_spawn_daemon(daemon_name, daemon_path, daemon_executable, build_timestamp).await;
 
             match result {
                 Ok(client) => {
@@ -197,7 +203,8 @@ impl DaemonClient {
     }
 
     async fn try_spawn_daemon(
-        daemon_id: u64,
+        daemon_name: &str,
+        daemon_path: &str,
         daemon_executable: &PathBuf,
         build_timestamp: u64,
     ) -> Result<SocketClient> {
@@ -205,8 +212,10 @@ impl DaemonClient {
         tracing::debug!("Starting daemon process");
         let mut child = Command::new(daemon_executable)
             .arg("daemon")
-            .arg("--daemon-id")
-            .arg(daemon_id.to_string())
+            .arg("--daemon-name")
+            .arg(daemon_name)
+            .arg("--daemon-path")
+            .arg(daemon_path)
             .arg("--build-timestamp")
             .arg(build_timestamp.to_string())
             .stdin(Stdio::null())
@@ -216,7 +225,7 @@ impl DaemonClient {
             .map_err(|e| anyhow::anyhow!("Failed to spawn daemon process: {}", e))?;
 
         // Wait for daemon to become ready
-        let socket_path = socket_path(daemon_id);
+        let socket_path = socket_path(daemon_name, daemon_path);
         let mut attempts = 0;
         const MAX_ATTEMPTS: u32 = 50; // 5 seconds total
 
@@ -236,7 +245,7 @@ impl DaemonClient {
 
             // Try to connect
             if socket_path.exists()
-                && let Ok(socket_client) = SocketClient::connect(daemon_id).await
+                && let Ok(socket_client) = SocketClient::connect(daemon_name, daemon_path).await
             {
                 // Successfully connected - daemon is ready
                 tracing::debug!("Daemon ready and accepting connections");
@@ -254,9 +263,9 @@ impl DaemonClient {
         }
     }
 
-    async fn cleanup_stale_processes(daemon_id: u64) {
+    async fn cleanup_stale_processes(daemon_name: &str, daemon_path: &str) {
         // Best effort cleanup using PID file
-        let pid_file = crate::transport::pid_path(daemon_id);
+        let pid_file = crate::transport::pid_path(daemon_name, daemon_path);
         if pid_file.exists()
             && let Ok(pid_str) = fs::read_to_string(&pid_file)
             && let Ok(pid) = pid_str.trim().parse::<u32>()

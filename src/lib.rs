@@ -73,7 +73,7 @@
 //! async fn main() -> Result<()> {
 //!     let handler = MyHandler;
 //!     let build_timestamp = 1234567890u64; // From build.rs
-//!     let (server, _handle) = DaemonServer::new(1000, build_timestamp, handler);
+//!     let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", build_timestamp, handler);
 //!     server.run().await?;
 //!     Ok(())
 //! }
