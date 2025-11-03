@@ -16,7 +16,7 @@
 //! - **Universal I/O**: Standard stdin/stdout streaming works with pipes and scripts
 //! - **Transparent Operation**: CLI acts as pure pipe (stdin → daemon → stdout)
 //! - **Task Cancellation**: Graceful cancellation via Ctrl+C
-//! - **Version Management**: Automatic daemon restart on version mismatch
+//! - **Version Management**: Automatic daemon restart when binary is rebuilt (mtime-based)
 //! - **Concurrent Processing**: Multiple clients can execute commands simultaneously (default limit: 100)
 //!
 //! ## Quick Start
@@ -72,8 +72,8 @@
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
 //!     let handler = MyHandler;
-//!     let build_timestamp = 1234567890u64; // From build.rs
-//!     let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", build_timestamp, handler);
+//!     // Automatically detects binary mtime for version checking
+//!     let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", handler);
 //!     server.run().await?;
 //!     Ok(())
 //! }
@@ -97,6 +97,7 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
+use std::{env, fs, time::UNIX_EPOCH};
 use tokio::io::AsyncWrite;
 use tokio_util::sync::CancellationToken;
 
@@ -131,6 +132,43 @@ pub mod test_utils {
     pub use crate::transport::{SocketClient, SocketMessage};
 }
 
+/// Get the modification time of the current executable binary.
+///
+/// Returns the executable's mtime as seconds since Unix epoch. This is used
+/// internally by `DaemonServer::new()` and `DaemonClient::connect()` for
+/// automatic version checking.
+///
+/// When the binary is rebuilt, its mtime changes, allowing the daemon to
+/// automatically restart on the next client connection. This approach ensures
+/// version synchronization works across all crates in your workspace,
+/// regardless of which one changed.
+///
+/// # Panics
+///
+/// Panics if the current executable path cannot be determined, the file metadata
+/// cannot be read, or the modification time is before the Unix epoch.
+///
+/// # Example
+///
+/// ```rust
+/// use daemon_cli::get_build_timestamp;
+///
+/// let timestamp = get_build_timestamp();
+/// println!("Binary was last modified at: {}", timestamp);
+/// ```
+pub fn get_build_timestamp() -> u64 {
+    let exe_path = env::current_exe().expect("Failed to get current executable path");
+    let metadata = fs::metadata(&exe_path).expect("Failed to get executable metadata");
+    let mtime = metadata
+        .modified()
+        .expect("Failed to get executable modification time");
+
+    mtime
+        .duration_since(UNIX_EPOCH)
+        .expect("Modification time before UNIX epoch")
+        .as_secs()
+}
+
 /// Handler trait for processing commands received via stdin.
 ///
 /// Implement this trait on your daemon struct to define how commands
@@ -141,7 +179,7 @@ pub mod test_utils {
 /// Handlers may be invoked concurrently for multiple client connections.
 /// The daemon clones your handler (via `Clone`) for each connection and
 /// spawns a separate task to handle it. If your handler accesses shared
-/// mutable state, use synchronization primitives like `Arc<Mutex<T>>` or
+/// mutable state, use synchronization primitives like [`Arc<Mutex<T>>`](std::sync::Arc) or
 /// message-passing channels.
 ///
 /// For serial execution of commands, implement queuing/routing logic within

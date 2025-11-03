@@ -33,8 +33,8 @@ echo "process file.txt" | cargo run --example cli
 **Client (`src/client.rs`)**
 - `DaemonClient` - Handles connection to daemon with automatic spawning
 - Auto-detects running daemons via socket existence
-- Performs version handshake using build timestamps
-- Restarts daemon on version mismatch
+- Performs version handshake using binary modification time (mtime)
+- Restarts daemon on version mismatch (client binary newer than daemon binary)
 - Uses PID files (`/tmp/{short_id}-{daemon_name}.pid`) for process cleanup
 - Requires `daemon_name` and `daemon_path` for identification
 
@@ -60,10 +60,12 @@ echo "process file.txt" | cargo run --example cli
 ### Key Design Patterns
 
 **Version Synchronization Flow:**
-1. Client tries to connect to existing socket
-2. If socket exists, performs version handshake
-3. On mismatch: cleans up socket + PID file, spawns new daemon
-4. New daemon performs fresh handshake
+1. Client automatically reads its own binary's modification time (mtime) at launch (via `DaemonClient::connect()`)
+2. Client tries to connect to existing socket
+3. If socket exists, performs version handshake by comparing mtimes
+4. On mismatch (client mtime > daemon mtime): cleans up socket + PID file, spawns new daemon
+5. New daemon automatically reads its own binary mtime at startup (via `DaemonServer::new()`) and performs fresh handshake
+6. Version checking ensures daemon automatically restarts when binary is rebuilt - no user action required
 
 **Command Execution Flow:**
 1. Client sends `Command` message with stdin content
@@ -120,7 +122,8 @@ Connection limiting is always enabled to prevent resource exhaustion. The defaul
 use daemon_cli::prelude::*;
 
 let handler = MyHandler::new();
-let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", build_timestamp, handler);
+// Automatically detects binary mtime for version checking
+let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", handler);
 // Default: max 100 concurrent connections
 ```
 
@@ -129,10 +132,10 @@ let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", build_ti
 use daemon_cli::prelude::*;
 
 let handler = MyHandler::new();
+// Automatically detects binary mtime for version checking
 let (server, _handle) = DaemonServer::new_with_limit(
     "my-cli",
     "/path/to/project",
-    build_timestamp,
     handler,
     10  // Max 10 concurrent clients
 );

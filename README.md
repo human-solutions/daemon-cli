@@ -4,7 +4,7 @@ A streaming daemon-client framework for Rust with automatic lifecycle management
 
 ## Features
 
-- Auto-spawning daemons with version synchronization
+- Auto-spawning daemons with mtime-based version synchronization
 - Streaming stdin/stdout interface
 - Ctrl+C cancellation support
 - Low latency (< 50ms warm, < 500ms cold)
@@ -44,7 +44,8 @@ impl CommandHandler for MyHandler {
 ```rust
 let daemon_name = "my-cli";
 let daemon_path = "/path/to/project";
-let (server, _handle) = DaemonServer::new(daemon_name, daemon_path, build_timestamp, MyHandler);
+// Automatically detects binary mtime for version checking
+let (server, _handle) = DaemonServer::new(daemon_name, daemon_path, MyHandler);
 server.run().await?;
 // Optionally use handle.shutdown() to stop the server gracefully
 ```
@@ -54,7 +55,8 @@ server.run().await?;
 ```rust
 let daemon_name = "my-cli";
 let daemon_path = "/path/to/project";
-let mut client = DaemonClient::connect(daemon_name, daemon_path, daemon_exe, build_timestamp).await?;
+// Automatically detects binary mtime for version checking
+let mut client = DaemonClient::connect(daemon_name, daemon_path, daemon_exe).await?;
 client.execute_command(command).await?;
 ```
 

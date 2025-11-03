@@ -7,7 +7,13 @@ use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
 /// Client for communicating with daemon processes via Unix sockets.
 ///
 /// Provides zero-configuration daemon management with automatic spawning,
-/// version synchronization, and stdin/stdout streaming.
+/// version synchronization via binary mtime comparison, and stdin/stdout streaming.
+///
+/// # Version Management
+///
+/// The client automatically detects when the binary has been rebuilt by comparing
+/// modification times (mtime). If the client binary is newer than the running daemon,
+/// the daemon is automatically restarted to ensure version consistency.
 ///
 /// # Example
 ///
@@ -16,11 +22,10 @@ use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
 /// use std::path::PathBuf;
 ///
 /// let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-/// let build_timestamp = 1234567890u64;
 ///
 /// // Actual usage pattern (requires daemon binary):
 ///  # tokio_test::block_on(async {
-///      let Ok(mut client) = DaemonClient::connect("cli", "/path/to/project", daemon_exe, build_timestamp).await else {
+///      let Ok(mut client) = DaemonClient::connect("cli", "/path/to/project", daemon_exe).await else {
 ///         // handle error...
 ///         return;
 ///      };
@@ -37,7 +42,7 @@ pub struct DaemonClient {
     pub daemon_path: String,
     /// Path to the daemon executable for spawning
     pub daemon_executable: PathBuf,
-    /// Build timestamp for version compatibility checking
+    /// Binary modification time (mtime) for version compatibility checking
     pub build_timestamp: u64,
     /// Error context buffer for client-side logging
     error_context: ErrorContextBuffer,
@@ -46,9 +51,26 @@ pub struct DaemonClient {
 impl DaemonClient {
     /// Connect to daemon, spawning it if needed with automatic version sync.
     ///
+    /// Automatically detects the binary's modification time for version checking.
     /// Handles daemon detection, spawning, readiness waiting, and version
     /// handshake. Restarts daemon on version mismatch.
     pub async fn connect(
+        daemon_name: &str,
+        daemon_path: &str,
+        daemon_executable: PathBuf,
+    ) -> Result<Self> {
+        let build_timestamp = crate::get_build_timestamp();
+        Self::connect_with_timestamp(daemon_name, daemon_path, daemon_executable, build_timestamp).await
+    }
+
+    /// Connect to daemon with explicit timestamp (primarily for testing).
+    ///
+    /// Most users should use [`connect()`](Self::connect) which auto-detects the binary's modification time.
+    /// This method allows tests to provide specific timestamps for version mismatch scenarios.
+    ///
+    /// Handles daemon detection, spawning, readiness waiting, and version
+    /// handshake. Restarts daemon on version mismatch.
+    pub async fn connect_with_timestamp(
         daemon_name: &str,
         daemon_path: &str,
         daemon_executable: PathBuf,
@@ -81,7 +103,7 @@ impl DaemonClient {
             Self::cleanup_stale_processes(daemon_name, daemon_path).await;
 
             // Spawn new daemon
-            match Self::spawn_and_wait_for_ready(daemon_name, daemon_path, &daemon_executable, build_timestamp)
+            match Self::spawn_and_wait_for_ready(daemon_name, daemon_path, &daemon_executable)
                 .await
             {
                 Ok(client) => client,
@@ -122,7 +144,6 @@ impl DaemonClient {
                 daemon_name,
                 daemon_path,
                 &daemon_executable,
-                build_timestamp,
             )
             .await
             {
@@ -168,14 +189,13 @@ impl DaemonClient {
         daemon_name: &str,
         daemon_path: &str,
         daemon_executable: &PathBuf,
-        build_timestamp: u64,
     ) -> Result<SocketClient> {
         tracing::debug!(daemon_exe = ?daemon_executable, "Spawning daemon");
 
         // Retry daemon spawning to handle race conditions with concurrent test cleanup
         for retry_attempt in 0..3 {
             let result =
-                Self::try_spawn_daemon(daemon_name, daemon_path, daemon_executable, build_timestamp).await;
+                Self::try_spawn_daemon(daemon_name, daemon_path, daemon_executable).await;
 
             match result {
                 Ok(client) => {
@@ -206,9 +226,9 @@ impl DaemonClient {
         daemon_name: &str,
         daemon_path: &str,
         daemon_executable: &PathBuf,
-        build_timestamp: u64,
     ) -> Result<SocketClient> {
         // Spawn daemon process (detached - it will manage its own lifecycle)
+        // The daemon will auto-detect its binary mtime for version checking
         tracing::debug!("Starting daemon process");
         let mut child = Command::new(daemon_executable)
             .arg("daemon")
@@ -216,8 +236,6 @@ impl DaemonClient {
             .arg(daemon_name)
             .arg("--daemon-path")
             .arg(daemon_path)
-            .arg("--build-timestamp")
-            .arg(build_timestamp.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

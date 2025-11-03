@@ -4,7 +4,7 @@ use std::time::Duration;
 use std::{
     env,
     path::PathBuf,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::Instant,
 };
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
@@ -140,18 +140,10 @@ pub fn get_daemon_path() -> PathBuf {
     exe_path
 }
 
-pub fn get_build_timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
-
-pub fn parse_daemon_args() -> Result<(String, String, u64)> {
+pub fn parse_daemon_args() -> Result<(String, String)> {
     let args: Vec<String> = env::args().collect();
     let mut daemon_name = None;
     let mut daemon_path = None;
-    let mut build_timestamp = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -172,18 +164,6 @@ pub fn parse_daemon_args() -> Result<(String, String, u64)> {
                     return Err(anyhow::anyhow!("--daemon-path requires a value"));
                 }
             }
-            "--build-timestamp" => {
-                if i + 1 < args.len() {
-                    build_timestamp = Some(
-                        args[i + 1]
-                            .parse::<u64>()
-                            .map_err(|_| anyhow::anyhow!("Invalid build-timestamp"))?,
-                    );
-                    i += 2;
-                } else {
-                    return Err(anyhow::anyhow!("--build-timestamp requires a value"));
-                }
-            }
             _ => {
                 i += 1;
             }
@@ -192,7 +172,6 @@ pub fn parse_daemon_args() -> Result<(String, String, u64)> {
 
     let daemon_name = daemon_name.ok_or_else(|| anyhow::anyhow!("--daemon-name is required"))?;
     let daemon_path = daemon_path.ok_or_else(|| anyhow::anyhow!("--daemon-path is required"))?;
-    let build_timestamp = build_timestamp.unwrap_or_else(get_build_timestamp);
 
-    Ok((daemon_name, daemon_path, build_timestamp))
+    Ok((daemon_name, daemon_path))
 }

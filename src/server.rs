@@ -25,7 +25,13 @@ static CLIENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// Daemon server that processes commands from CLI clients.
 ///
 /// Handles multiple concurrent clients with streaming output,
-/// cancellation support, and version checking.
+/// cancellation support, and mtime-based version checking.
+///
+/// # Version Management
+///
+/// The server stores the binary's modification time (mtime) and compares it
+/// with connecting clients. If a client has a newer mtime, the client will
+/// automatically restart the daemon to ensure version consistency.
 ///
 /// # Example
 ///
@@ -50,9 +56,9 @@ static CLIENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 ///     }
 /// }
 ///
-/// // Demonstrate server creation
+/// // Demonstrate server creation - automatically detects binary mtime
 /// let daemon = MyDaemon;
-/// let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", 1234567890, daemon);
+/// let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", daemon);
 /// // Use handle.shutdown() to stop the server, or drop it to run indefinitely
 /// ```
 pub struct DaemonServer<H> {
@@ -60,7 +66,7 @@ pub struct DaemonServer<H> {
     pub daemon_name: String,
     /// Daemon path (used as unique identifier/scope)
     pub daemon_path: String,
-    /// Build timestamp for version compatibility checking
+    /// Binary modification time (mtime) for version compatibility checking
     pub build_timestamp: u64,
     handler: H,
     shutdown_rx: oneshot::Receiver<()>,
@@ -91,13 +97,13 @@ where
 {
     /// Create a new daemon server instance with default connection limit (100).
     ///
+    /// Automatically detects the binary's modification time for version checking.
     /// Returns the server and a handle that can be used to shut it down gracefully.
     ///
     /// # Parameters
     ///
     /// * `daemon_name` - Name of the daemon (e.g., CLI tool name)
     /// * `daemon_path` - Path used as unique identifier/scope for this daemon instance
-    /// * `build_timestamp` - Build timestamp for version compatibility checking
     /// * `handler` - Your command handler implementation
     ///
     /// # Returns
@@ -105,19 +111,41 @@ where
     /// A tuple of (DaemonServer, DaemonHandle). Call `shutdown()` on the handle
     /// to gracefully stop the server, or drop it to let the server run indefinitely.
     ///
-    pub fn new(daemon_name: &str, daemon_path: &str, build_timestamp: u64, handler: H) -> (Self, DaemonHandle) {
-        Self::new_with_limit(daemon_name, daemon_path, build_timestamp, handler, 100)
+    pub fn new(daemon_name: &str, daemon_path: &str, handler: H) -> (Self, DaemonHandle) {
+        let build_timestamp = crate::get_build_timestamp();
+        Self::new_with_timestamp(daemon_name, daemon_path, build_timestamp, handler)
+    }
+
+    /// Create a new daemon server instance with explicit timestamp (primarily for testing).
+    ///
+    /// Most users should use [`new()`](Self::new) which auto-detects the binary's modification time.
+    /// This method allows tests to provide specific timestamps for version mismatch scenarios.
+    ///
+    /// # Parameters
+    ///
+    /// * `daemon_name` - Name of the daemon (e.g., CLI tool name)
+    /// * `daemon_path` - Path used as unique identifier/scope for this daemon instance
+    /// * `build_timestamp` - Binary mtime (seconds since Unix epoch) for version checking
+    /// * `handler` - Your command handler implementation
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (DaemonServer, DaemonHandle). Call `shutdown()` on the handle
+    /// to gracefully stop the server, or drop it to let the server run indefinitely.
+    ///
+    pub fn new_with_timestamp(daemon_name: &str, daemon_path: &str, build_timestamp: u64, handler: H) -> (Self, DaemonHandle) {
+        Self::new_with_limit_and_timestamp(daemon_name, daemon_path, build_timestamp, handler, 100)
     }
 
     /// Create a new daemon server instance with custom connection limit.
     ///
+    /// Automatically detects the binary's modification time for version checking.
     /// Returns the server and a handle that can be used to shut it down gracefully.
     ///
     /// # Parameters
     ///
     /// * `daemon_name` - Name of the daemon (e.g., CLI tool name)
     /// * `daemon_path` - Path used as unique identifier/scope for this daemon instance
-    /// * `build_timestamp` - Build timestamp for version compatibility checking
     /// * `handler` - Your command handler implementation
     /// * `max_connections` - Maximum number of concurrent client connections
     ///
@@ -149,9 +177,37 @@ where
     /// # }
     ///
     /// let handler = MyHandler;
-    /// let (server, _handle) = DaemonServer::new_with_limit("my-cli", "/path/to/project", 1234567890, handler, 10);
+    /// let (server, _handle) = DaemonServer::new_with_limit("my-cli", "/path/to/project", handler, 10);
     /// ```
     pub fn new_with_limit(
+        daemon_name: &str,
+        daemon_path: &str,
+        handler: H,
+        max_connections: usize,
+    ) -> (Self, DaemonHandle) {
+        let build_timestamp = crate::get_build_timestamp();
+        Self::new_with_limit_and_timestamp(daemon_name, daemon_path, build_timestamp, handler, max_connections)
+    }
+
+    /// Create a new daemon server instance with explicit timestamp and connection limit (primarily for testing).
+    ///
+    /// Most users should use [`new_with_limit()`](Self::new_with_limit) which auto-detects the binary's modification time.
+    /// This method allows tests to provide specific timestamps for version mismatch scenarios.
+    ///
+    /// # Parameters
+    ///
+    /// * `daemon_name` - Name of the daemon (e.g., CLI tool name)
+    /// * `daemon_path` - Path used as unique identifier/scope for this daemon instance
+    /// * `build_timestamp` - Binary mtime (seconds since Unix epoch) for version checking
+    /// * `handler` - Your command handler implementation
+    /// * `max_connections` - Maximum number of concurrent client connections
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (DaemonServer, DaemonHandle). Call `shutdown()` on the handle
+    /// to gracefully stop the server, or drop it to let the server run indefinitely.
+    ///
+    pub fn new_with_limit_and_timestamp(
         daemon_name: &str,
         daemon_path: &str,
         build_timestamp: u64,
@@ -199,7 +255,7 @@ where
     ///
     /// The server spawns a separate task for each client connection, allowing
     /// multiple clients to execute commands concurrently. Handlers must be
-    /// thread-safe if they access shared mutable state (use Arc<Mutex<T>> or
+    /// thread-safe if they access shared mutable state (use [`Arc<Mutex<T>>`](std::sync::Arc) or
     /// similar synchronization primitives).
     pub async fn run(mut self) -> Result<()> {
         let mut socket_server = SocketServer::new(&self.daemon_name, &self.daemon_path).await?;

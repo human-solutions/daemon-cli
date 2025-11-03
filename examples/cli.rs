@@ -33,7 +33,6 @@ fn print_usage() {
     println!("Daemon options:");
     println!("  --daemon-name <name>      Daemon name (required)");
     println!("  --daemon-path <path>      Daemon path/scope (required)");
-    println!("  --build-timestamp <time>  Build timestamp (optional)");
     println!();
     println!("Examples:");
     println!("  # Start daemon");
@@ -53,7 +52,7 @@ fn print_usage() {
 }
 
 async fn run_daemon_mode() -> Result<()> {
-    let (daemon_name, daemon_path, build_timestamp) = parse_daemon_args()?;
+    let (daemon_name, daemon_path) = parse_daemon_args()?;
 
     // Initialize tracing subscriber for daemon logs
     // Logs go to stderr with compact format
@@ -66,10 +65,11 @@ async fn run_daemon_mode() -> Result<()> {
         .compact()
         .init();
 
-    tracing::info!(daemon_name, daemon_path, build_timestamp, "Starting daemon");
+    tracing::info!(daemon_name, daemon_path, "Starting daemon");
 
     let handler = CommandProcessor::new();
-    let (server, _handle) = DaemonServer::new(&daemon_name, &daemon_path, build_timestamp, handler);
+    // Automatically detects binary mtime for version checking
+    let (server, _handle) = DaemonServer::new(&daemon_name, &daemon_path, handler);
     server.run().await?;
 
     Ok(())
@@ -88,13 +88,12 @@ async fn run_client_mode() -> Result<()> {
         bail!("No command provided");
     }
 
-    // Connect to daemon (auto-spawns if needed)
+    // Connect to daemon (auto-spawns if needed, auto-detects binary mtime)
     let daemon_name = "cli";
     let daemon_path = env::current_dir()?.to_string_lossy().to_string();
     let daemon_exe = get_daemon_path();
-    let build_timestamp = get_build_timestamp();
 
-    let mut client = DaemonClient::connect(daemon_name, &daemon_path, daemon_exe, build_timestamp).await?;
+    let mut client = DaemonClient::connect(daemon_name, &daemon_path, daemon_exe).await?;
 
     // Execute command and stream output to stdout
     client.execute_command(command).await?;
