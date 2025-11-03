@@ -38,7 +38,7 @@ echo "process file.txt" | cargo run --example cli
 - Performs version handshake using binary modification time (mtime)
 - Restarts daemon on version mismatch (client binary newer than daemon binary)
 - Uses PID files (`/tmp/{short_id}-{daemon_name}.pid`) for process cleanup
-- Requires only `daemon_path` parameter - everything else is automatic
+- Requires only `root_path` parameter - everything else is automatic
 
 **Server (`src/server.rs`)**
 - `DaemonServer` - Background daemon that processes commands
@@ -51,11 +51,11 @@ echo "process file.txt" | cargo run --example cli
 - Connection limiting always enabled (default: 100, configurable)
 - Streaming output via tokio duplex channel
 - Cancellation via `CancellationToken` when connection closes
-- Requires only `daemon_path` parameter
+- Requires only `root_path` parameter
 
 **Transport (`src/transport.rs`)**
 - Unix domain sockets at `/tmp/{short_id}-{daemon_name}.sock`
-- `short_id` is a 4-character base62 hash of `daemon_path` for uniqueness
+- `short_id` is a 4-character base62 hash of `root_path` for uniqueness
 - Length-delimited framing using tokio-util codec
 - Message types: `VersionCheck`, `Command`, `OutputChunk`, `CommandError`
 - Socket permissions: 0600 (owner only)

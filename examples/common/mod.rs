@@ -123,14 +123,14 @@ impl CommandHandler for CommandProcessor {
 
 pub fn parse_daemon_args() -> Result<String> {
     let args: Vec<String> = env::args().collect();
-    let mut daemon_path = None;
+    let mut root_path = None;
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--daemon-path" => {
                 if i + 1 < args.len() {
-                    daemon_path = Some(args[i + 1].clone());
+                    root_path = Some(args[i + 1].clone());
                     i += 2;
                 } else {
                     return Err(anyhow::anyhow!("--daemon-path requires a value"));
@@ -142,7 +142,7 @@ pub fn parse_daemon_args() -> Result<String> {
         }
     }
 
-    let daemon_path = daemon_path.ok_or_else(|| anyhow::anyhow!("--daemon-path is required"))?;
+    let root_path = root_path.ok_or_else(|| anyhow::anyhow!("--daemon-path is required"))?;
 
-    Ok(daemon_path)
+    Ok(root_path)
 }

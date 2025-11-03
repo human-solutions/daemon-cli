@@ -64,8 +64,8 @@ static CLIENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 pub struct DaemonServer<H> {
     /// Daemon name (e.g., CLI tool name)
     pub daemon_name: String,
-    /// Daemon path (used as unique identifier/scope)
-    pub daemon_path: String,
+    /// Project root path (used as unique identifier/scope)
+    pub root_path: String,
     /// Binary modification time (mtime) for version compatibility checking
     pub build_timestamp: u64,
     handler: H,
@@ -103,7 +103,7 @@ where
     ///
     /// # Parameters
     ///
-    /// * `daemon_path` - Path used as unique identifier/scope for this daemon instance
+    /// * `root_path` - Project root directory path used as unique identifier/scope for this daemon instance
     /// * `handler` - Your command handler implementation
     ///
     /// # Returns
@@ -111,10 +111,10 @@ where
     /// A tuple of (DaemonServer, DaemonHandle). Call `shutdown()` on the handle
     /// to gracefully stop the server, or drop it to let the server run indefinitely.
     ///
-    pub fn new(daemon_path: &str, handler: H) -> (Self, DaemonHandle) {
+    pub fn new(root_path: &str, handler: H) -> (Self, DaemonHandle) {
         let daemon_name = crate::auto_detect_daemon_name();
         let build_timestamp = crate::get_build_timestamp();
-        Self::new_with_name_and_timestamp(&daemon_name, daemon_path, build_timestamp, handler, 100)
+        Self::new_with_name_and_timestamp(&daemon_name, root_path, build_timestamp, handler, 100)
     }
 
     /// Create a new daemon server instance with explicit name, timestamp, and connection limit (primarily for testing).
@@ -126,7 +126,7 @@ where
     /// # Parameters
     ///
     /// * `daemon_name` - Name of the daemon (e.g., CLI tool name)
-    /// * `daemon_path` - Path used as unique identifier/scope for this daemon instance
+    /// * `root_path` - Project root directory path used as unique identifier/scope for this daemon instance
     /// * `build_timestamp` - Binary mtime (seconds since Unix epoch) for version checking
     /// * `handler` - Your command handler implementation
     /// * `max_connections` - Maximum number of concurrent client connections
@@ -138,7 +138,7 @@ where
     ///
     pub fn new_with_name_and_timestamp(
         daemon_name: &str,
-        daemon_path: &str,
+        root_path: &str,
         build_timestamp: u64,
         handler: H,
         max_connections: usize,
@@ -150,7 +150,7 @@ where
 
         let server = Self {
             daemon_name: daemon_name.to_string(),
-            daemon_path: daemon_path.to_string(),
+            root_path: root_path.to_string(),
             build_timestamp,
             handler,
             shutdown_rx,
@@ -187,11 +187,11 @@ where
     /// thread-safe if they access shared mutable state (use [`Arc<Mutex<T>>`](std::sync::Arc) or
     /// similar synchronization primitives).
     pub async fn run(mut self) -> Result<()> {
-        let mut socket_server = SocketServer::new(&self.daemon_name, &self.daemon_path).await?;
+        let mut socket_server = SocketServer::new(&self.daemon_name, &self.root_path).await?;
 
         // Write PID file for precise process management
         let pid = process::id();
-        let pid_file = crate::transport::pid_path(&self.daemon_name, &self.daemon_path);
+        let pid_file = crate::transport::pid_path(&self.daemon_name, &self.root_path);
         if let Err(e) = fs::write(&pid_file, pid.to_string()) {
             tracing::warn!(pid_file = ?pid_file, error = %e, "Failed to write PID file");
         }
@@ -204,7 +204,7 @@ where
 
         tracing::info!(
             daemon_name = %self.daemon_name,
-            daemon_path = %self.daemon_path,
+            root_path = %self.root_path,
             socket_path = ?socket_server.socket_path(),
             build_timestamp = self.build_timestamp,
             "Daemon started and listening"

@@ -152,7 +152,7 @@ Connection close signals completion (no explicit message needed).
 - **Platform**: Unix-like systems only (Linux, macOS) via Unix domain sockets
 - **Connection limits**: Default 100 concurrent connections, configurable per daemon
 - **No structured output**: Framework doesn't enforce output format (handler decides)
-- **Daemon identification**: Requires unique `daemon_name` and `daemon_path` for socket isolation
+- **Daemon identification**: Requires unique `daemon_name` and `root_path` for socket isolation
 
 ### Acceptable Limitations
 

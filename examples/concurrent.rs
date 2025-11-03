@@ -257,7 +257,7 @@ fn print_usage() {
 }
 
 async fn run_daemon_mode() -> Result<()> {
-    let daemon_path = parse_daemon_args()?;
+    let root_path = parse_daemon_args()?;
 
     // Initialize tracing subscriber for daemon logs
     // Logs go to stderr with compact format
@@ -271,13 +271,13 @@ async fn run_daemon_mode() -> Result<()> {
         .init();
 
     tracing::info!(
-        daemon_path,
+        root_path,
         "Starting task queue daemon with concurrent request handling"
     );
 
     let handler = TaskQueueHandler::new();
     // Automatically detects daemon name and binary mtime
-    let (server, _handle) = DaemonServer::new(&daemon_path, handler);
+    let (server, _handle) = DaemonServer::new(&root_path, handler);
     server.run().await?;
 
     Ok(())
@@ -297,9 +297,9 @@ async fn run_client_mode() -> Result<()> {
     }
 
     // Connect to daemon (auto-spawns if needed, auto-detects everything)
-    let daemon_path = env::current_dir()?.to_string_lossy().to_string();
+    let root_path = env::current_dir()?.to_string_lossy().to_string();
 
-    let mut client = DaemonClient::connect(&daemon_path).await?;
+    let mut client = DaemonClient::connect(&root_path).await?;
 
     // Execute command and stream output to stdout
     client.execute_command(command).await?;

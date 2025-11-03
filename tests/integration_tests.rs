@@ -14,18 +14,18 @@ use tokio::{
 fn generate_test_daemon_config() -> (String, String) {
     let test_id: u64 = rand::thread_rng().gen_range(10000..99999);
     let daemon_name = format!("test-{}", test_id);
-    let daemon_path = format!("/tmp/daemon-test-{}", test_id);
-    (daemon_name, daemon_path)
+    let root_path = format!("/tmp/daemon-test-{}", test_id);
+    (daemon_name, root_path)
 }
 
 // Helper to start a daemon server with cleanup
 async fn start_test_daemon<H: CommandHandler + Clone + 'static>(
     daemon_name: &str,
-    daemon_path: &str,
+    root_path: &str,
     build_timestamp: u64,
     handler: H,
 ) -> (DaemonHandle, JoinHandle<()>) {
-    let (server, shutdown_handle) = DaemonServer::new_with_name_and_timestamp(daemon_name, daemon_path, build_timestamp, handler, 100);
+    let (server, shutdown_handle) = DaemonServer::new_with_name_and_timestamp(daemon_name, root_path, build_timestamp, handler, 100);
     let join_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -39,13 +39,13 @@ async fn start_test_daemon<H: CommandHandler + Clone + 'static>(
 // Helper to start a daemon server with custom connection limit
 async fn start_test_daemon_with_limit<H: CommandHandler + Clone + 'static>(
     daemon_name: &str,
-    daemon_path: &str,
+    root_path: &str,
     build_timestamp: u64,
     handler: H,
     max_connections: usize,
 ) -> (DaemonHandle, JoinHandle<()>) {
     let (server, shutdown_handle) =
-        DaemonServer::new_with_name_and_timestamp(daemon_name, daemon_path, build_timestamp, handler, max_connections);
+        DaemonServer::new_with_name_and_timestamp(daemon_name, root_path, build_timestamp, handler, max_connections);
     let join_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -147,17 +147,17 @@ impl CommandHandler for ErrorHandler {
 
 #[tokio::test]
 async fn test_basic_streaming() -> Result<()> {
-    let (daemon_name, daemon_path) = generate_test_daemon_config();
+    let (daemon_name, root_path) = generate_test_daemon_config();
     let build_timestamp = 1234567890;
     let handler = EchoHandler;
 
     // Start server with cleanup
     let (shutdown_handle, join_handle) =
-        start_test_daemon(&daemon_name, &daemon_path, build_timestamp, handler).await;
+        start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
 
     // Connect client (note: this would normally auto-spawn, but we started manually)
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(&daemon_name, &daemon_path, daemon_exe, build_timestamp).await?;
+    let mut client = DaemonClient::connect_with_name_and_timestamp(&daemon_name, &root_path, daemon_exe, build_timestamp).await?;
 
     // Execute command and capture output
     let result = client.execute_command("Hello, World!".to_string()).await;
@@ -174,17 +174,17 @@ async fn test_basic_streaming() -> Result<()> {
 
 #[tokio::test]
 async fn test_chunked_output() -> Result<()> {
-    let (daemon_name, daemon_path) = generate_test_daemon_config();
+    let (daemon_name, root_path) = generate_test_daemon_config();
     let build_timestamp = 1234567891;
     let handler = ChunkedHandler;
 
     // Start server with cleanup
     let (shutdown_handle, join_handle) =
-        start_test_daemon(&daemon_name, &daemon_path, build_timestamp, handler).await;
+        start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
 
     // Connect and execute
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(&daemon_name, &daemon_path, daemon_exe, build_timestamp).await?;
+    let mut client = DaemonClient::connect_with_name_and_timestamp(&daemon_name, &root_path, daemon_exe, build_timestamp).await?;
 
     let result = client.execute_command("test".to_string()).await;
     assert!(result.is_ok());
@@ -197,17 +197,17 @@ async fn test_chunked_output() -> Result<()> {
 
 #[tokio::test]
 async fn test_handler_error_reporting() -> Result<()> {
-    let (daemon_name, daemon_path) = generate_test_daemon_config();
+    let (daemon_name, root_path) = generate_test_daemon_config();
     let build_timestamp = 1234567892;
     let handler = ErrorHandler;
 
     // Start server with cleanup
     let (shutdown_handle, join_handle) =
-        start_test_daemon(&daemon_name, &daemon_path, build_timestamp, handler).await;
+        start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
 
     // Connect and execute
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(&daemon_name, &daemon_path, daemon_exe, build_timestamp).await?;
+    let mut client = DaemonClient::connect_with_name_and_timestamp(&daemon_name, &root_path, daemon_exe, build_timestamp).await?;
 
     let result = client.execute_command("test".to_string()).await;
 
@@ -223,20 +223,20 @@ async fn test_handler_error_reporting() -> Result<()> {
 
 #[tokio::test]
 async fn test_multiple_sequential_commands() -> Result<()> {
-    let (daemon_name, daemon_path) = generate_test_daemon_config();
+    let (daemon_name, root_path) = generate_test_daemon_config();
     let build_timestamp = 1234567893;
     let handler = EchoHandler;
 
     // Start server with cleanup
     let (shutdown_handle, join_handle) =
-        start_test_daemon(&daemon_name, &daemon_path, build_timestamp, handler).await;
+        start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
 
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
 
     // Execute multiple commands sequentially
     for i in 1..=3 {
         let mut client =
-            DaemonClient::connect_with_name_and_timestamp(&daemon_name, &daemon_path, daemon_exe.clone(), build_timestamp).await?;
+            DaemonClient::connect_with_name_and_timestamp(&daemon_name, &root_path, daemon_exe.clone(), build_timestamp).await?;
         let result = client.execute_command(format!("Command {}", i)).await;
         assert!(result.is_ok());
 
@@ -252,17 +252,17 @@ async fn test_multiple_sequential_commands() -> Result<()> {
 
 #[tokio::test]
 async fn test_connection_close_during_processing() -> Result<()> {
-    let (daemon_name, daemon_path) = generate_test_daemon_config();
+    let (daemon_name, root_path) = generate_test_daemon_config();
     let build_timestamp = 1234567894;
     let handler = CancellableHandler;
 
     // Start server with cleanup
     let (shutdown_handle, join_handle) =
-        start_test_daemon(&daemon_name, &daemon_path, build_timestamp, handler).await;
+        start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
 
     // Connect and start long-running command
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(&daemon_name, &daemon_path, daemon_exe, build_timestamp).await?;
+    let mut client = DaemonClient::connect_with_name_and_timestamp(&daemon_name, &root_path, daemon_exe, build_timestamp).await?;
 
     // Start the command and then drop the client to simulate connection close
     let command_handle =
@@ -339,14 +339,14 @@ impl CommandHandler for ConcurrentTrackingHandler {
 
 #[tokio::test]
 async fn test_concurrent_clients() -> Result<()> {
-    let (daemon_name, daemon_path) = generate_test_daemon_config();
+    let (daemon_name, root_path) = generate_test_daemon_config();
     let build_timestamp = 1234567895;
     let handler = ConcurrentTrackingHandler::new();
     let max_concurrent_ref = handler.max_concurrent.clone();
 
     // Start server with cleanup
     let (shutdown_handle, join_handle) =
-        start_test_daemon(&daemon_name, &daemon_path, build_timestamp, handler).await;
+        start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
 
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
 
@@ -355,10 +355,10 @@ async fn test_concurrent_clients() -> Result<()> {
     for i in 0..5 {
         let daemon_exe_clone = daemon_exe.clone();
         let daemon_name_clone = daemon_name.clone();
-        let daemon_path_clone = daemon_path.clone();
+        let root_path_clone = root_path.clone();
         let handle = spawn(async move {
             let mut client =
-                DaemonClient::connect_with_name_and_timestamp(&daemon_name_clone, &daemon_path_clone, daemon_exe_clone, build_timestamp).await?;
+                DaemonClient::connect_with_name_and_timestamp(&daemon_name_clone, &root_path_clone, daemon_exe_clone, build_timestamp).await?;
             client
                 .execute_command(format!("concurrent-test-{}", i))
                 .await
@@ -389,14 +389,14 @@ async fn test_concurrent_clients() -> Result<()> {
 
 #[tokio::test]
 async fn test_concurrent_stress_10_plus_clients() -> Result<()> {
-    let (daemon_name, daemon_path) = generate_test_daemon_config();
+    let (daemon_name, root_path) = generate_test_daemon_config();
     let build_timestamp = 1234567896;
     let handler = ConcurrentTrackingHandler::new();
     let max_concurrent_ref = handler.max_concurrent.clone();
 
     // Start server with cleanup
     let (shutdown_handle, join_handle) =
-        start_test_daemon(&daemon_name, &daemon_path, build_timestamp, handler).await;
+        start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
 
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
 
@@ -406,10 +406,10 @@ async fn test_concurrent_stress_10_plus_clients() -> Result<()> {
     for i in 0..num_clients {
         let daemon_exe_clone = daemon_exe.clone();
         let daemon_name_clone = daemon_name.clone();
-        let daemon_path_clone = daemon_path.clone();
+        let root_path_clone = root_path.clone();
         let handle = spawn(async move {
             let mut client =
-                DaemonClient::connect_with_name_and_timestamp(&daemon_name_clone, &daemon_path_clone, daemon_exe_clone, build_timestamp).await?;
+                DaemonClient::connect_with_name_and_timestamp(&daemon_name_clone, &root_path_clone, daemon_exe_clone, build_timestamp).await?;
             client.execute_command(format!("stress-test-{}", i)).await
         });
         client_handles.push(handle);
@@ -453,14 +453,14 @@ async fn test_concurrent_stress_10_plus_clients() -> Result<()> {
 
 #[tokio::test]
 async fn test_connection_limit() -> Result<()> {
-    let (daemon_name, daemon_path) = generate_test_daemon_config();
+    let (daemon_name, root_path) = generate_test_daemon_config();
     let build_timestamp = 1234567897;
     let handler = ConcurrentTrackingHandler::new();
     let max_concurrent_ref = handler.max_concurrent.clone();
 
     // Start server with connection limit of 3
     let (shutdown_handle, join_handle) =
-        start_test_daemon_with_limit(&daemon_name, &daemon_path, build_timestamp, handler, 3).await;
+        start_test_daemon_with_limit(&daemon_name, &root_path, build_timestamp, handler, 3).await;
 
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
 
@@ -470,10 +470,10 @@ async fn test_connection_limit() -> Result<()> {
     for i in 0..num_clients {
         let daemon_exe_clone = daemon_exe.clone();
         let daemon_name_clone = daemon_name.clone();
-        let daemon_path_clone = daemon_path.clone();
+        let root_path_clone = root_path.clone();
         let handle = spawn(async move {
             let mut client =
-                DaemonClient::connect_with_name_and_timestamp(&daemon_name_clone, &daemon_path_clone, daemon_exe_clone, build_timestamp).await?;
+                DaemonClient::connect_with_name_and_timestamp(&daemon_name_clone, &root_path_clone, daemon_exe_clone, build_timestamp).await?;
             client.execute_command(format!("limit-test-{}", i)).await
         });
         client_handles.push(handle);
