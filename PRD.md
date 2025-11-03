@@ -27,11 +27,12 @@ A generic, reusable daemon-client framework for Rust applications that provides 
 
 ## Core Architecture
 
-### Single-Task Processing Model
+### Concurrent Processing Model
 
-- **One command at a time**: Daemon handles exactly one CLI connection
-- **Additional connections fail immediately**: Ensures predictable resource usage and simple state management
-- **Command isolation**: Each command is independent with full cleanup between executions
+- **Multiple concurrent clients**: Daemon handles up to 100 concurrent CLI connections (configurable)
+- **Connection limiting**: When limit is reached, new connections are rejected to prevent resource exhaustion
+- **Command isolation**: Each command runs in a separate task with independent cleanup
+- **Thread-safe handlers**: Handlers must implement `Clone + Send + Sync` for concurrent execution
 
 ### Automatic Version Synchronization
 
@@ -149,21 +150,23 @@ Connection close signals completion (no explicit message needed).
 
 - **Non-interactive**: Entire command must be provided via stdin (no interactive prompts)
 - **Platform**: Unix-like systems only (Linux, macOS) via Unix domain sockets
-- **Single client**: Only one connection at a time per daemon instance
+- **Connection limits**: Default 100 concurrent connections, configurable per daemon
 - **No structured output**: Framework doesn't enforce output format (handler decides)
+- **Daemon identification**: Requires unique `daemon_name` and `daemon_path` for socket isolation
 
 ### Acceptable Limitations
 
 - **No progress reporting**: Unless handler explicitly emits it in output stream
-- **No command queuing**: Second connection attempt fails, doesn't queue
+- **Connection rejection at limit**: Connections beyond the limit are rejected, not queued
 - **No bi-directional interaction**: Command sent once, no follow-up requests
 
 ## Future Considerations
 
 Not in current scope, but potential future enhancements:
 
-- Multi-client support with request queuing
+- ~~Multi-client support with request queuing~~ (✅ Implemented: concurrent client support with connection limiting)
 - Interactive command mode with prompt/response cycles
 - Structured output format enforcement
 - Windows support via named pipes
 - Progress reporting protocol extensions
+- Connection queuing instead of rejection when limit reached

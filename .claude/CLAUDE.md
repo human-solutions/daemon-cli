@@ -19,7 +19,7 @@ cargo check                    # Fast check without building
 ### Run Example
 ```bash
 # Start daemon manually
-cargo run --example cli -- daemon --daemon-id 1000
+cargo run --example cli -- daemon --daemon-name cli --daemon-path /tmp/test
 
 # Execute commands (auto-spawns daemon)
 echo "status" | cargo run --example cli
@@ -35,7 +35,8 @@ echo "process file.txt" | cargo run --example cli
 - Auto-detects running daemons via socket existence
 - Performs version handshake using build timestamps
 - Restarts daemon on version mismatch
-- Uses PID files (`/tmp/daemon-cli-{id}.pid`) for process cleanup
+- Uses PID files (`/tmp/{short_id}-{daemon_name}.pid`) for process cleanup
+- Requires `daemon_name` and `daemon_path` for identification
 
 **Server (`src/server.rs`)**
 - `DaemonServer` - Background daemon that processes commands
@@ -47,9 +48,11 @@ echo "process file.txt" | cargo run --example cli
 - Connection limiting always enabled (default: 100, configurable)
 - Streaming output via tokio duplex channel
 - Cancellation via `CancellationToken` when connection closes
+- Requires `daemon_name` and `daemon_path` parameters
 
 **Transport (`src/transport.rs`)**
-- Unix domain sockets at `/tmp/daemon-cli-{daemon_id}.sock`
+- Unix domain sockets at `/tmp/{short_id}-{daemon_name}.sock`
+- `short_id` is a 4-character base62 hash of `daemon_path` for uniqueness
 - Length-delimited framing using tokio-util codec
 - Message types: `VersionCheck`, `Command`, `OutputChunk`, `CommandError`
 - Socket permissions: 0600 (owner only)
@@ -117,7 +120,7 @@ Connection limiting is always enabled to prevent resource exhaustion. The defaul
 use daemon_cli::prelude::*;
 
 let handler = MyHandler::new();
-let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
+let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", build_timestamp, handler);
 // Default: max 100 concurrent connections
 ```
 
@@ -127,7 +130,8 @@ use daemon_cli::prelude::*;
 
 let handler = MyHandler::new();
 let (server, _handle) = DaemonServer::new_with_limit(
-    daemon_id,
+    "my-cli",
+    "/path/to/project",
     build_timestamp,
     handler,
     10  // Max 10 concurrent clients
@@ -145,3 +149,4 @@ When the limit is reached, new connections wait for an available slot. This is i
 # Other memory
 
 - Use the `gh` command to interact with GitHub
+- Keep commit and PR messages brief

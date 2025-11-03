@@ -12,7 +12,7 @@
 //! Usage:
 //! ```bash
 //! # Terminal 1: Start the daemon
-//! cargo run --example concurrent -- daemon --daemon-id 2000
+//! cargo run --example concurrent -- daemon --daemon-name concurrent --daemon-path /tmp/test
 //!
 //! # Terminal 2-5: Send concurrent commands
 //! echo "add-task Build feature X" | cargo run --example concurrent
@@ -244,12 +244,13 @@ fn print_usage() {
     println!("  (any other)    Run as client");
     println!();
     println!("Daemon options:");
-    println!("  --daemon-id <id>          Daemon ID (required)");
+    println!("  --daemon-name <name>      Daemon name (required)");
+    println!("  --daemon-path <path>      Daemon path/scope (required)");
     println!("  --build-timestamp <time>  Build timestamp (optional)");
     println!();
     println!("Examples:");
     println!("  # Start daemon");
-    println!("  cargo run --example concurrent -- daemon --daemon-id 2000");
+    println!("  cargo run --example concurrent -- daemon --daemon-name concurrent --daemon-path /tmp/test");
     println!();
     println!("  # Send commands (from multiple terminals for concurrency)");
     println!("  echo \"add-task Build feature\" | cargo run --example concurrent");
@@ -258,12 +259,12 @@ fn print_usage() {
 }
 
 async fn run_daemon_mode() -> Result<()> {
-    let (daemon_id, build_timestamp) = parse_daemon_args()?;
+    let (daemon_name, daemon_path, build_timestamp) = parse_daemon_args()?;
 
     // Initialize tracing subscriber for daemon logs
     // Logs go to stderr with compact format
     // To redirect to a file instead:
-    //   let file = std::fs::File::create(format!("/tmp/daemon-{}.log", daemon_id))?;
+    //   let file = std::fs::File::create(format!("/tmp/daemon-{}.log", daemon_name))?;
     //   tracing_subscriber::fmt().with_writer(file).init();
     tracing_subscriber::fmt()
         .with_target(false)
@@ -272,13 +273,14 @@ async fn run_daemon_mode() -> Result<()> {
         .init();
 
     tracing::info!(
-        daemon_id,
+        daemon_name,
+        daemon_path,
         build_timestamp,
         "Starting task queue daemon with concurrent request handling"
     );
 
     let handler = TaskQueueHandler::new();
-    let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
+    let (server, _handle) = DaemonServer::new(&daemon_name, &daemon_path, build_timestamp, handler);
     server.run().await?;
 
     Ok(())
@@ -298,7 +300,8 @@ async fn run_client_mode() -> Result<()> {
     }
 
     // Connect to daemon (auto-spawns if needed)
-    let daemon_id = 2000; // Different from cli example (1000)
+    let daemon_name = "concurrent";
+    let daemon_path = env::current_dir()?.to_string_lossy().to_string();
 
     // Get path to this concurrent example binary
     let mut daemon_exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -309,7 +312,7 @@ async fn run_client_mode() -> Result<()> {
 
     let build_timestamp = get_build_timestamp();
 
-    let mut client = DaemonClient::connect(daemon_id, daemon_exe, build_timestamp).await?;
+    let mut client = DaemonClient::connect(daemon_name, &daemon_path, daemon_exe, build_timestamp).await?;
 
     // Execute command and stream output to stdout
     client.execute_command(command).await?;

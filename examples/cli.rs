@@ -31,12 +31,13 @@ fn print_usage() {
     println!("  (any other)    Run as client (reads stdin, sends to daemon, outputs to stdout)");
     println!();
     println!("Daemon options:");
-    println!("  --daemon-id <id>          Daemon ID (required)");
+    println!("  --daemon-name <name>      Daemon name (required)");
+    println!("  --daemon-path <path>      Daemon path/scope (required)");
     println!("  --build-timestamp <time>  Build timestamp (optional)");
     println!();
     println!("Examples:");
     println!("  # Start daemon");
-    println!("  cargo run --example cli -- daemon --daemon-id 1000");
+    println!("  cargo run --example cli -- daemon --daemon-name cli --daemon-path /tmp/test");
     println!();
     println!("  # Execute commands via client");
     println!("  echo \"status\" | cargo run --example cli");
@@ -52,12 +53,12 @@ fn print_usage() {
 }
 
 async fn run_daemon_mode() -> Result<()> {
-    let (daemon_id, build_timestamp) = parse_daemon_args()?;
+    let (daemon_name, daemon_path, build_timestamp) = parse_daemon_args()?;
 
     // Initialize tracing subscriber for daemon logs
     // Logs go to stderr with compact format
     // To redirect to a file instead:
-    //   let file = std::fs::File::create(format!("/tmp/daemon-{}.log", daemon_id))?;
+    //   let file = std::fs::File::create(format!("/tmp/daemon-{}.log", daemon_name))?;
     //   tracing_subscriber::fmt().with_writer(file).init();
     tracing_subscriber::fmt()
         .with_target(false)
@@ -65,10 +66,10 @@ async fn run_daemon_mode() -> Result<()> {
         .compact()
         .init();
 
-    tracing::info!(daemon_id, build_timestamp, "Starting daemon");
+    tracing::info!(daemon_name, daemon_path, build_timestamp, "Starting daemon");
 
     let handler = CommandProcessor::new();
-    let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, handler);
+    let (server, _handle) = DaemonServer::new(&daemon_name, &daemon_path, build_timestamp, handler);
     server.run().await?;
 
     Ok(())
@@ -88,11 +89,12 @@ async fn run_client_mode() -> Result<()> {
     }
 
     // Connect to daemon (auto-spawns if needed)
-    let daemon_id = 1000;
+    let daemon_name = "cli";
+    let daemon_path = env::current_dir()?.to_string_lossy().to_string();
     let daemon_exe = get_daemon_path();
     let build_timestamp = get_build_timestamp();
 
-    let mut client = DaemonClient::connect(daemon_id, daemon_exe, build_timestamp).await?;
+    let mut client = DaemonClient::connect(daemon_name, &daemon_path, daemon_exe, build_timestamp).await?;
 
     // Execute command and stream output to stdout
     client.execute_command(command).await?;

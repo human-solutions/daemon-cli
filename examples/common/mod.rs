@@ -147,24 +147,29 @@ pub fn get_build_timestamp() -> u64 {
         .as_secs()
 }
 
-pub fn parse_daemon_args() -> Result<(u64, u64)> {
+pub fn parse_daemon_args() -> Result<(String, String, u64)> {
     let args: Vec<String> = env::args().collect();
-    let mut daemon_id = None;
+    let mut daemon_name = None;
+    let mut daemon_path = None;
     let mut build_timestamp = None;
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--daemon-id" => {
+            "--daemon-name" => {
                 if i + 1 < args.len() {
-                    daemon_id = Some(
-                        args[i + 1]
-                            .parse::<u64>()
-                            .map_err(|_| anyhow::anyhow!("Invalid daemon-id"))?,
-                    );
+                    daemon_name = Some(args[i + 1].clone());
                     i += 2;
                 } else {
-                    return Err(anyhow::anyhow!("--daemon-id requires a value"));
+                    return Err(anyhow::anyhow!("--daemon-name requires a value"));
+                }
+            }
+            "--daemon-path" => {
+                if i + 1 < args.len() {
+                    daemon_path = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    return Err(anyhow::anyhow!("--daemon-path requires a value"));
                 }
             }
             "--build-timestamp" => {
@@ -185,8 +190,9 @@ pub fn parse_daemon_args() -> Result<(u64, u64)> {
         }
     }
 
-    let daemon_id = daemon_id.ok_or_else(|| anyhow::anyhow!("--daemon-id is required"))?;
+    let daemon_name = daemon_name.ok_or_else(|| anyhow::anyhow!("--daemon-name is required"))?;
+    let daemon_path = daemon_path.ok_or_else(|| anyhow::anyhow!("--daemon-path is required"))?;
     let build_timestamp = build_timestamp.unwrap_or_else(get_build_timestamp);
 
-    Ok((daemon_id, build_timestamp))
+    Ok((daemon_name, daemon_path, build_timestamp))
 }

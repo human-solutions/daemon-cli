@@ -52,12 +52,14 @@ static CLIENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 ///
 /// // Demonstrate server creation
 /// let daemon = MyDaemon;
-/// let (server, _handle) = DaemonServer::new(1000, 1234567890, daemon);
+/// let (server, _handle) = DaemonServer::new("my-cli", "/path/to/project", 1234567890, daemon);
 /// // Use handle.shutdown() to stop the server, or drop it to run indefinitely
 /// ```
 pub struct DaemonServer<H> {
-    /// Unique identifier for this daemon instance
-    pub daemon_id: u64,
+    /// Daemon name (e.g., CLI tool name)
+    pub daemon_name: String,
+    /// Daemon path (used as unique identifier/scope)
+    pub daemon_path: String,
     /// Build timestamp for version compatibility checking
     pub build_timestamp: u64,
     handler: H,
@@ -93,7 +95,8 @@ where
     ///
     /// # Parameters
     ///
-    /// * `daemon_id` - Unique identifier for this daemon instance
+    /// * `daemon_name` - Name of the daemon (e.g., CLI tool name)
+    /// * `daemon_path` - Path used as unique identifier/scope for this daemon instance
     /// * `build_timestamp` - Build timestamp for version compatibility checking
     /// * `handler` - Your command handler implementation
     ///
@@ -102,8 +105,8 @@ where
     /// A tuple of (DaemonServer, DaemonHandle). Call `shutdown()` on the handle
     /// to gracefully stop the server, or drop it to let the server run indefinitely.
     ///
-    pub fn new(daemon_id: u64, build_timestamp: u64, handler: H) -> (Self, DaemonHandle) {
-        Self::new_with_limit(daemon_id, build_timestamp, handler, 100)
+    pub fn new(daemon_name: &str, daemon_path: &str, build_timestamp: u64, handler: H) -> (Self, DaemonHandle) {
+        Self::new_with_limit(daemon_name, daemon_path, build_timestamp, handler, 100)
     }
 
     /// Create a new daemon server instance with custom connection limit.
@@ -112,7 +115,8 @@ where
     ///
     /// # Parameters
     ///
-    /// * `daemon_id` - Unique identifier for this daemon instance
+    /// * `daemon_name` - Name of the daemon (e.g., CLI tool name)
+    /// * `daemon_path` - Path used as unique identifier/scope for this daemon instance
     /// * `build_timestamp` - Build timestamp for version compatibility checking
     /// * `handler` - Your command handler implementation
     /// * `max_connections` - Maximum number of concurrent client connections
@@ -145,10 +149,11 @@ where
     /// # }
     ///
     /// let handler = MyHandler;
-    /// let (server, _handle) = DaemonServer::new_with_limit(1000, 1234567890, handler, 10);
+    /// let (server, _handle) = DaemonServer::new_with_limit("my-cli", "/path/to/project", 1234567890, handler, 10);
     /// ```
     pub fn new_with_limit(
-        daemon_id: u64,
+        daemon_name: &str,
+        daemon_path: &str,
         build_timestamp: u64,
         handler: H,
         max_connections: usize,
@@ -159,7 +164,8 @@ where
         let connection_semaphore = Arc::new(Semaphore::new(max_connections));
 
         let server = Self {
-            daemon_id,
+            daemon_name: daemon_name.to_string(),
+            daemon_path: daemon_path.to_string(),
             build_timestamp,
             handler,
             shutdown_rx,
@@ -180,7 +186,7 @@ where
     ///
     /// # Behavior
     ///
-    /// - Creates Unix socket at `/tmp/daemon-cli-{daemon_id}.sock`
+    /// - Creates Unix socket at `/tmp/{short_id}-{daemon_name}.sock`
     /// - Sets socket permissions to 0600 (owner read/write only)
     /// - Accepts multiple concurrent client connections
     /// - Each client handled in separate tokio task
@@ -196,11 +202,11 @@ where
     /// thread-safe if they access shared mutable state (use Arc<Mutex<T>> or
     /// similar synchronization primitives).
     pub async fn run(mut self) -> Result<()> {
-        let mut socket_server = SocketServer::new(self.daemon_id).await?;
+        let mut socket_server = SocketServer::new(&self.daemon_name, &self.daemon_path).await?;
 
         // Write PID file for precise process management
         let pid = process::id();
-        let pid_file = crate::transport::pid_path(self.daemon_id);
+        let pid_file = crate::transport::pid_path(&self.daemon_name, &self.daemon_path);
         if let Err(e) = fs::write(&pid_file, pid.to_string()) {
             tracing::warn!(pid_file = ?pid_file, error = %e, "Failed to write PID file");
         }
@@ -212,7 +218,8 @@ where
         });
 
         tracing::info!(
-            daemon_id = self.daemon_id,
+            daemon_name = %self.daemon_name,
+            daemon_path = %self.daemon_path,
             socket_path = ?socket_server.socket_path(),
             build_timestamp = self.build_timestamp,
             "Daemon started and listening"
@@ -223,7 +230,7 @@ where
             let accept_result = select! {
                 result = socket_server.accept() => Some(result),
                 _ = &mut self.shutdown_rx => {
-                    tracing::info!(daemon_id = self.daemon_id, "Daemon received shutdown signal");
+                    tracing::info!(daemon_name = %self.daemon_name, "Daemon received shutdown signal");
                     break;
                 }
             };

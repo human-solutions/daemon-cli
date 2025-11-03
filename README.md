@@ -42,7 +42,9 @@ impl CommandHandler for MyHandler {
 **Run daemon:**
 
 ```rust
-let (server, _handle) = DaemonServer::new(daemon_id, build_timestamp, MyHandler);
+let daemon_name = "my-cli";
+let daemon_path = "/path/to/project";
+let (server, _handle) = DaemonServer::new(daemon_name, daemon_path, build_timestamp, MyHandler);
 server.run().await?;
 // Optionally use handle.shutdown() to stop the server gracefully
 ```
@@ -50,7 +52,9 @@ server.run().await?;
 **Run client:**
 
 ```rust
-let mut client = DaemonClient::connect(daemon_id, daemon_exe, build_timestamp).await?;
+let daemon_name = "my-cli";
+let daemon_path = "/path/to/project";
+let mut client = DaemonClient::connect(daemon_name, daemon_path, daemon_exe, build_timestamp).await?;
 client.execute_command(command).await?;
 ```
 
@@ -81,7 +85,7 @@ See `examples/cli.rs` and `examples/concurrent.rs` for complete logging setup ex
 See `examples/cli.rs` for a complete working example:
 
 ```bash
-cargo run --example cli -- daemon --daemon-id 1000
+cargo run --example cli -- daemon --daemon-name cli --daemon-path /tmp/test
 echo "status" | cargo run --example cli
 ```
 

@@ -1,20 +1,43 @@
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{env, fs, path::PathBuf};
+use std::{collections::hash_map::DefaultHasher, env, fs, hash::{Hash, Hasher}, path::PathBuf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-// Internal: Generate socket path for a daemon ID
-pub fn socket_path(daemon_id: u64) -> PathBuf {
-    let temp_dir = env::temp_dir();
-    temp_dir.join(format!("daemon-cli-{daemon_id}.sock"))
+// Base62 character set for encoding
+const BASE62: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+// Internal: Hash a path and convert to 4-character base62 identifier
+fn hash_path_to_short_id(path: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    // Convert to base62 and take first 4 characters
+    let mut num = hash;
+    let mut result = Vec::new();
+
+    for _ in 0..4 {
+        result.push(BASE62[(num % 62) as usize]);
+        num /= 62;
+    }
+
+    String::from_utf8(result).unwrap()
 }
 
-// Internal: Generate PID file path for a daemon ID
-pub fn pid_path(daemon_id: u64) -> PathBuf {
+// Internal: Generate socket path for a daemon
+pub fn socket_path(daemon_name: &str, daemon_path: &str) -> PathBuf {
+    let short_id = hash_path_to_short_id(daemon_path);
     let temp_dir = env::temp_dir();
-    temp_dir.join(format!("daemon-cli-{daemon_id}.pid"))
+    temp_dir.join(format!("{short_id}-{daemon_name}.sock"))
+}
+
+// Internal: Generate PID file path for a daemon
+pub fn pid_path(daemon_name: &str, daemon_path: &str) -> PathBuf {
+    let short_id = hash_path_to_short_id(daemon_path);
+    let temp_dir = env::temp_dir();
+    temp_dir.join(format!("{short_id}-{daemon_name}.pid"))
 }
 
 // Internal: Serialize a message to bytes
@@ -36,8 +59,8 @@ pub struct SocketServer {
 }
 
 impl SocketServer {
-    pub async fn new(daemon_id: u64) -> Result<Self> {
-        let socket_path = socket_path(daemon_id);
+    pub async fn new(daemon_name: &str, daemon_path: &str) -> Result<Self> {
+        let socket_path = socket_path(daemon_name, daemon_path);
 
         // Remove existing socket file if it exists
         if socket_path.exists() {
@@ -83,8 +106,8 @@ pub struct SocketClient {
 }
 
 impl SocketClient {
-    pub async fn connect(daemon_id: u64) -> Result<Self> {
-        let socket_path = socket_path(daemon_id);
+    pub async fn connect(daemon_name: &str, daemon_path: &str) -> Result<Self> {
+        let socket_path = socket_path(daemon_name, daemon_path);
         let stream = UnixStream::connect(socket_path).await?;
         Ok(Self {
             connection: SocketConnection::new(stream),
