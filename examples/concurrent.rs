@@ -30,7 +30,7 @@ use std::{collections::VecDeque, env, sync::Arc};
 use tokio::{
     io::{self, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::Mutex,
-    time::{sleep, Duration},
+    time::{Duration, sleep},
 };
 
 /// Shared state for the task queue daemon
@@ -196,11 +196,21 @@ impl CommandHandler for TaskQueueHandler {
 
             _ => {
                 output.write_all(b"Available commands:\n").await?;
-                output.write_all(b"  add-task <description>  - Add a task to the queue\n").await?;
-                output.write_all(b"  list-tasks              - Show all queued tasks\n").await?;
-                output.write_all(b"  process-task            - Process next task from queue\n").await?;
-                output.write_all(b"  stats                   - Show daemon statistics\n").await?;
-                output.write_all(b"  clear                   - Clear all tasks\n").await?;
+                output
+                    .write_all(b"  add-task <description>  - Add a task to the queue\n")
+                    .await?;
+                output
+                    .write_all(b"  list-tasks              - Show all queued tasks\n")
+                    .await?;
+                output
+                    .write_all(b"  process-task            - Process next task from queue\n")
+                    .await?;
+                output
+                    .write_all(b"  stats                   - Show daemon statistics\n")
+                    .await?;
+                output
+                    .write_all(b"  clear                   - Clear all tasks\n")
+                    .await?;
                 Err(anyhow::anyhow!("Unknown command"))
             }
         }
