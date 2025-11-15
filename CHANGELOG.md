@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2025-01-15
+
+### Changed (BREAKING)
+
+- `CommandHandler::handle()` now takes `terminal_info: TerminalInfo` parameter
+- `SocketMessage::Command` changed from `Command(String)` to `Command { command: String, terminal_info: TerminalInfo }`
+
+### Added
+
+- Terminal info detection: width, height, TTY status, color support, theme (light/dark)
+- New types: `TerminalInfo`, `ColorSupport`, `Theme`
+
+### Migration
+
+Add `terminal_info` parameter to your handler (prefix with `_` if unused):
+```rust
+async fn handle(
+    &self,
+    command: &str,
+    terminal_info: TerminalInfo,  // NEW
+    output: impl AsyncWrite + Send + Unpin,
+    cancel_token: CancellationToken,
+) -> Result<i32>
+```
+
 ## [0.3.0] - 2025-01-XX
 
 ### Changed (BREAKING)
