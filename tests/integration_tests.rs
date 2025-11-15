@@ -83,6 +83,7 @@ impl CommandHandler for EchoHandler {
     async fn handle(
         &self,
         command: &str,
+        _terminal_info: TerminalInfo,
         mut output: impl AsyncWrite + Send + Unpin,
         _cancel: CancellationToken,
     ) -> Result<i32> {
@@ -102,6 +103,7 @@ impl CommandHandler for ChunkedHandler {
     async fn handle(
         &self,
         _command: &str,
+        _terminal_info: TerminalInfo,
         mut output: impl AsyncWrite + Send + Unpin,
         _cancel: CancellationToken,
     ) -> Result<i32> {
@@ -124,6 +126,7 @@ impl CommandHandler for CancellableHandler {
     async fn handle(
         &self,
         _command: &str,
+        _terminal_info: TerminalInfo,
         mut output: impl AsyncWrite + Send + Unpin,
         cancel: CancellationToken,
     ) -> Result<i32> {
@@ -148,6 +151,7 @@ impl CommandHandler for ErrorHandler {
     async fn handle(
         &self,
         _command: &str,
+        _terminal_info: TerminalInfo,
         mut output: impl AsyncWrite + Send + Unpin,
         _cancel: CancellationToken,
     ) -> Result<i32> {
@@ -350,6 +354,7 @@ impl CommandHandler for ConcurrentTrackingHandler {
     async fn handle(
         &self,
         _command: &str,
+        _terminal_info: TerminalInfo,
         mut output: impl AsyncWrite + Send + Unpin,
         _cancel: CancellationToken,
     ) -> Result<i32> {

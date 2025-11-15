@@ -35,6 +35,7 @@
 //!     async fn handle(
 //!         &self,
 //!         command: &str,
+//!         terminal_info: TerminalInfo,
 //!         mut output: impl AsyncWrite + Send + Unpin,
 //!         cancel_token: CancellationToken,
 //!     ) -> Result<i32> {
@@ -61,6 +62,7 @@
 //! #     async fn handle(
 //! #         &self,
 //! #         command: &str,
+//! #         _terminal_info: TerminalInfo,
 //! #         mut output: impl AsyncWrite + Send + Unpin,
 //! #         _cancel_token: CancellationToken,
 //! #     ) -> Result<i32> {
@@ -104,11 +106,13 @@ use tokio_util::sync::CancellationToken;
 mod client;
 mod error_context;
 mod server;
+mod terminal;
 mod transport;
 
 pub use client::DaemonClient;
 pub use error_context::ErrorContextBuffer;
 pub use server::{DaemonHandle, DaemonServer};
+pub use terminal::{ColorSupport, TerminalInfo, Theme};
 
 #[cfg(test)]
 mod tests;
@@ -117,7 +121,10 @@ mod tests;
 ///
 /// Use `use daemon_cli::prelude::*;` to import all commonly needed items.
 pub mod prelude {
-    pub use crate::{CommandHandler, DaemonClient, DaemonHandle, DaemonServer, ErrorContextBuffer};
+    pub use crate::{
+        ColorSupport, CommandHandler, DaemonClient, DaemonHandle, DaemonServer, ErrorContextBuffer,
+        TerminalInfo, Theme,
+    };
     pub use anyhow::Result;
     pub use async_trait::async_trait;
     pub use tokio_util::sync::CancellationToken;
@@ -209,6 +216,7 @@ fn auto_detect_daemon_name() -> String {
 ///     async fn handle(
 ///         &self,
 ///         command: &str,
+///         terminal_info: TerminalInfo,
 ///         mut output: impl AsyncWrite + Send + Unpin,
 ///         cancel_token: CancellationToken,
 ///     ) -> Result<i32> {
@@ -247,6 +255,11 @@ pub trait CommandHandler: Send + Sync {
     /// This method may be called concurrently from multiple tasks. Ensure
     /// your implementation is thread-safe if accessing shared state.
     ///
+    /// The `terminal_info` parameter contains information about the client's
+    /// terminal environment (width, height, color support, theme). Individual
+    /// fields may be `None` if detection failed. Use this to format output
+    /// appropriately for the client's terminal.
+    ///
     /// Write output incrementally via `output`. Long-running operations should
     /// check `cancel_token.is_cancelled()` to handle graceful cancellation.
     ///
@@ -255,6 +268,7 @@ pub trait CommandHandler: Send + Sync {
     async fn handle(
         &self,
         command: &str,
+        terminal_info: TerminalInfo,
         output: impl AsyncWrite + Send + Unpin,
         cancel_token: CancellationToken,
     ) -> Result<i32>;

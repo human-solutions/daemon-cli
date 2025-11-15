@@ -1,6 +1,7 @@
+use crate::terminal::TerminalInfo;
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::hash_map::DefaultHasher,
     env, fs,
@@ -170,7 +171,10 @@ impl SocketConnection {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum SocketMessage {
     VersionCheck { build_timestamp: u64 },
-    Command(String),
+    Command {
+        command: String,
+        terminal_info: TerminalInfo,
+    },
     OutputChunk(Vec<u8>),
     CommandComplete { exit_code: i32 },
     CommandError(String),

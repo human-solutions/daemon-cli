@@ -47,6 +47,7 @@ static CLIENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 ///     async fn handle(
 ///         &self,
 ///         command: &str,
+///         _terminal_info: TerminalInfo,
 ///         mut output: impl AsyncWrite + Send + Unpin,
 ///         _cancel_token: CancellationToken,
 ///     ) -> Result<i32> {
@@ -286,15 +287,22 @@ where
                         }
 
                         // Receive command
-                        let command = match connection.receive_message::<SocketMessage>().await {
-                            Ok(Some(SocketMessage::Command(cmd))) => cmd,
+                        let (command, terminal_info) = match connection.receive_message::<SocketMessage>().await {
+                            Ok(Some(SocketMessage::Command { command, terminal_info })) => (command, terminal_info),
                             _ => {
                                 tracing::warn!("No command received from client");
                                 return;
                             }
                         };
 
-                        tracing::debug!("Received command");
+                        tracing::debug!(
+                            terminal_width = ?terminal_info.width,
+                            terminal_height = ?terminal_info.height,
+                            is_tty = terminal_info.is_tty,
+                            color_support = ?terminal_info.color_support,
+                            theme = ?terminal_info.theme,
+                            "Received command with terminal info"
+                        );
 
                         // Create a pipe for streaming output
                         let (output_writer, mut output_reader) = tokio::io::duplex(8192);
@@ -306,7 +314,7 @@ where
                         // Spawn handler task (will not inherit span by default)
                         let mut handler_task = Some(spawn(async move {
                             handler
-                                .handle(&command, output_writer, cancel_token_clone)
+                                .handle(&command, terminal_info, output_writer, cancel_token_clone)
                                 .await
                         }));
 

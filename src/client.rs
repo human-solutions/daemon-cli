@@ -1,6 +1,7 @@
 use crate::error_context::{ErrorContextBuffer, get_or_init_global_error_context};
-use crate::transport::{SocketClient, SocketMessage, socket_path};
-use anyhow::{Result, bail};
+use crate::terminal::TerminalInfo;
+use crate::transport::{socket_path, SocketClient, SocketMessage};
+use anyhow::{bail, Result};
 use std::{fs, path::PathBuf, process::Stdio, time::Duration};
 use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
 
@@ -306,9 +307,23 @@ impl DaemonClient {
     pub async fn execute_command(&mut self, command: String) -> Result<i32> {
         tracing::debug!(command = %command, "Executing command");
 
-        // Send command
+        // Detect terminal information from the client environment
+        let terminal_info = TerminalInfo::detect().await;
+        tracing::debug!(
+            width = ?terminal_info.width,
+            height = ?terminal_info.height,
+            is_tty = terminal_info.is_tty,
+            color_support = ?terminal_info.color_support,
+            theme = ?terminal_info.theme,
+            "Detected terminal info"
+        );
+
+        // Send command with terminal info
         self.socket_client
-            .send_message(&SocketMessage::Command(command))
+            .send_message(&SocketMessage::Command {
+                command,
+                terminal_info,
+            })
             .await
             .map_err(|e| {
                 self.error_context.dump_to_stderr();
