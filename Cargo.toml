@@ -1,6 +1,6 @@
 [package]
 name = "daemon-cli"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 
 [dependencies]
@@ -16,6 +16,9 @@ scopeguard = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 parking_lot = "0.12"
+termbg = "0.6"
+terminal_size = "0.4"
+supports-color = "3.0"
 
 [[example]]
 name = "cli"

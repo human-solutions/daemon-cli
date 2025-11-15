@@ -26,6 +26,7 @@ impl CommandHandler for CommandProcessor {
     async fn handle(
         &self,
         command: &str,
+        _terminal_info: TerminalInfo,
         mut output: impl AsyncWrite + Send + Unpin,
         cancel_token: CancellationToken,
     ) -> Result<i32> {
@@ -115,7 +116,7 @@ impl CommandHandler for CommandProcessor {
 
             _ => {
                 output.write_all(b"Unknown command. Available: status, uptime, process [file], long [seconds], echo [message]\n").await?;
-                Ok(127)  // Exit code 127 for unknown command
+                Ok(127) // Exit code 127 for unknown command
             }
         }
     }

@@ -19,6 +19,7 @@ impl CommandHandler for SimpleHandler {
     async fn handle(
         &self,
         command: &str,
+        _terminal_info: TerminalInfo,
         mut output: impl AsyncWrite + Send + Unpin,
         _cancel: CancellationToken,
     ) -> Result<i32> {
@@ -35,7 +36,13 @@ async fn test_version_handshake_success() -> Result<()> {
     let handler = SimpleHandler;
 
     // Start server with specific build timestamp
-    let (server, _handle) = DaemonServer::new_with_name_and_timestamp(daemon_name, root_path, build_timestamp, handler, 100);
+    let (server, _handle) = DaemonServer::new_with_name_and_timestamp(
+        daemon_name,
+        root_path,
+        build_timestamp,
+        handler,
+        100,
+    );
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -74,7 +81,13 @@ async fn test_version_mismatch_detection() -> Result<()> {
     let handler = SimpleHandler;
 
     // Start server with one timestamp
-    let (server, _handle) = DaemonServer::new_with_name_and_timestamp(daemon_name, root_path, daemon_build_timestamp, handler, 100);
+    let (server, _handle) = DaemonServer::new_with_name_and_timestamp(
+        daemon_name,
+        root_path,
+        daemon_build_timestamp,
+        handler,
+        100,
+    );
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -119,7 +132,13 @@ async fn test_multiple_version_handshakes() -> Result<()> {
     let handler = SimpleHandler;
 
     // Start server
-    let (server, _handle) = DaemonServer::new_with_name_and_timestamp(daemon_name, root_path, build_timestamp, handler, 100);
+    let (server, _handle) = DaemonServer::new_with_name_and_timestamp(
+        daemon_name,
+        root_path,
+        build_timestamp,
+        handler,
+        100,
+    );
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -163,7 +182,13 @@ async fn test_version_handshake_before_command() -> Result<()> {
     let handler = SimpleHandler;
 
     // Start server
-    let (server, _handle) = DaemonServer::new_with_name_and_timestamp(daemon_name, root_path, build_timestamp, handler, 100);
+    let (server, _handle) = DaemonServer::new_with_name_and_timestamp(
+        daemon_name,
+        root_path,
+        build_timestamp,
+        handler,
+        100,
+    );
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -184,8 +209,18 @@ async fn test_version_handshake_before_command() -> Result<()> {
     ));
 
     // Then, send a command
+    let terminal_info = TerminalInfo {
+        width: Some(80),
+        height: Some(24),
+        is_tty: true,
+        color_support: ColorSupport::Basic16,
+        theme: None,
+    };
     client
-        .send_message(&SocketMessage::Command("test command".to_string()))
+        .send_message(&SocketMessage::Command {
+            command: "test command".to_string(),
+            terminal_info,
+        })
         .await?;
 
     // Should receive output chunks
@@ -206,7 +241,13 @@ async fn test_command_without_handshake_fails() -> Result<()> {
     let handler = SimpleHandler;
 
     // Start server
-    let (server, _handle) = DaemonServer::new_with_name_and_timestamp(daemon_name, root_path, build_timestamp, handler, 100);
+    let (server, _handle) = DaemonServer::new_with_name_and_timestamp(
+        daemon_name,
+        root_path,
+        build_timestamp,
+        handler,
+        100,
+    );
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -217,8 +258,18 @@ async fn test_command_without_handshake_fails() -> Result<()> {
 
     // Try to send command without handshake
     // The server expects VersionCheck first, so it should close the connection
+    let terminal_info = TerminalInfo {
+        width: None,
+        height: None,
+        is_tty: false,
+        color_support: ColorSupport::None,
+        theme: None,
+    };
     client
-        .send_message(&SocketMessage::Command("test".to_string()))
+        .send_message(&SocketMessage::Command {
+            command: "test".to_string(),
+            terminal_info,
+        })
         .await?;
 
     // Connection should close or we get no response
@@ -239,7 +290,13 @@ async fn test_concurrent_version_handshakes() -> Result<()> {
     let handler = SimpleHandler;
 
     // Start server
-    let (server, _handle) = DaemonServer::new_with_name_and_timestamp(daemon_name, root_path, build_timestamp, handler, 100);
+    let (server, _handle) = DaemonServer::new_with_name_and_timestamp(
+        daemon_name,
+        root_path,
+        build_timestamp,
+        handler,
+        100,
+    );
     let _server_handle = spawn(async move {
         server.run().await.ok();
     });

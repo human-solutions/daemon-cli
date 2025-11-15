@@ -19,6 +19,7 @@ impl CommandHandler for TestHandler {
     async fn handle(
         &self,
         _command: &str,
+        _terminal_info: TerminalInfo,
         mut output: impl AsyncWrite + Send + Unpin,
         _cancel: CancellationToken,
     ) -> Result<i32> {
@@ -51,12 +52,30 @@ fn test_socket_message_serialization() {
     }
 
     // Test Command message
-    let command_msg = SocketMessage::Command("test command".to_string());
+    let terminal_info = TerminalInfo {
+        width: Some(80),
+        height: Some(24),
+        is_tty: true,
+        color_support: ColorSupport::Truecolor,
+        theme: Some(Theme::Dark),
+    };
+    let command_msg = SocketMessage::Command {
+        command: "test command".to_string(),
+        terminal_info: terminal_info.clone(),
+    };
     let serialized = serde_json::to_string(&command_msg).unwrap();
     let deserialized: SocketMessage = serde_json::from_str(&serialized).unwrap();
     match deserialized {
-        SocketMessage::Command(cmd) => {
-            assert_eq!(cmd, "test command");
+        SocketMessage::Command {
+            command,
+            terminal_info: ti,
+        } => {
+            assert_eq!(command, "test command");
+            assert_eq!(ti.width, Some(80));
+            assert_eq!(ti.height, Some(24));
+            assert_eq!(ti.is_tty, true);
+            assert_eq!(ti.color_support, ColorSupport::Truecolor);
+            assert_eq!(ti.theme, Some(Theme::Dark));
         }
         _ => panic!("Wrong message type"),
     }
@@ -100,10 +119,17 @@ async fn test_handler_basic_output() {
     let handler = TestHandler::new("Hello, World!".to_string());
     let mut output = Vec::new();
     let cancel = CancellationToken::new();
+    let terminal_info = TerminalInfo {
+        width: Some(80),
+        height: Some(24),
+        is_tty: true,
+        color_support: ColorSupport::Basic16,
+        theme: None,
+    };
 
-    let result = handler.handle("test", &mut output, cancel).await;
+    let result = handler.handle("test", terminal_info, &mut output, cancel).await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 0);  // Success exit code
+    assert_eq!(result.unwrap(), 0); // Success exit code
     assert_eq!(String::from_utf8(output).unwrap(), "Hello, World!");
 }
 
@@ -118,6 +144,7 @@ async fn test_handler_with_cancellation() {
         async fn handle(
             &self,
             _command: &str,
+            _terminal_info: TerminalInfo,
             mut output: impl AsyncWrite + Send + Unpin,
             cancel: CancellationToken,
         ) -> Result<i32> {
@@ -136,11 +163,20 @@ async fn test_handler_with_cancellation() {
     let handler = CancellableHandler;
     let mut output = Vec::new();
     let cancel = CancellationToken::new();
+    let terminal_info = TerminalInfo {
+        width: None,
+        height: None,
+        is_tty: false,
+        color_support: ColorSupport::None,
+        theme: None,
+    };
 
     // Cancel immediately
     cancel.cancel();
 
-    let result = handler.handle("test", &mut output, cancel).await;
+    let result = handler
+        .handle("test", terminal_info, &mut output, cancel)
+        .await;
     assert!(result.is_err());
     assert!(String::from_utf8(output).unwrap().contains("Cancelled"));
 }

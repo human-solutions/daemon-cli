@@ -60,6 +60,7 @@ impl CommandHandler for TaskQueueHandler {
     async fn handle(
         &self,
         command: &str,
+        _terminal_info: TerminalInfo,
         mut output: impl AsyncWrite + Send + Unpin,
         cancel_token: CancellationToken,
     ) -> Result<i32> {
@@ -208,7 +209,7 @@ impl CommandHandler for TaskQueueHandler {
                 output
                     .write_all(b"  clear                   - Clear all tasks\n")
                     .await?;
-                Ok(127)  // Exit code 127 for unknown command
+                Ok(127) // Exit code 127 for unknown command
             }
         }
     }
