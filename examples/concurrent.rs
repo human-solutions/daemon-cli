@@ -208,7 +208,7 @@ impl CommandHandler for TaskQueueHandler {
                 output
                     .write_all(b"  clear                   - Clear all tasks\n")
                     .await?;
-                Ok(127)  // Exit code 127 for unknown command
+                Ok(127) // Exit code 127 for unknown command
             }
         }
     }

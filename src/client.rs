@@ -108,8 +108,7 @@ impl DaemonClient {
             Self::cleanup_stale_processes(daemon_name, root_path).await;
 
             // Spawn new daemon
-            match Self::spawn_and_wait_for_ready(daemon_name, root_path, &daemon_executable).await
-            {
+            match Self::spawn_and_wait_for_ready(daemon_name, root_path, &daemon_executable).await {
                 Ok(client) => client,
                 Err(e) => {
                     error_context.dump_to_stderr();

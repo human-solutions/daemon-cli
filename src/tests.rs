@@ -103,7 +103,7 @@ async fn test_handler_basic_output() {
 
     let result = handler.handle("test", &mut output, cancel).await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 0);  // Success exit code
+    assert_eq!(result.unwrap(), 0); // Success exit code
     assert_eq!(String::from_utf8(output).unwrap(), "Hello, World!");
 }
 

@@ -25,7 +25,13 @@ async fn start_test_daemon<H: CommandHandler + Clone + 'static>(
     build_timestamp: u64,
     handler: H,
 ) -> (DaemonHandle, JoinHandle<()>) {
-    let (server, shutdown_handle) = DaemonServer::new_with_name_and_timestamp(daemon_name, root_path, build_timestamp, handler, 100);
+    let (server, shutdown_handle) = DaemonServer::new_with_name_and_timestamp(
+        daemon_name,
+        root_path,
+        build_timestamp,
+        handler,
+        100,
+    );
     let join_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -44,8 +50,13 @@ async fn start_test_daemon_with_limit<H: CommandHandler + Clone + 'static>(
     handler: H,
     max_connections: usize,
 ) -> (DaemonHandle, JoinHandle<()>) {
-    let (server, shutdown_handle) =
-        DaemonServer::new_with_name_and_timestamp(daemon_name, root_path, build_timestamp, handler, max_connections);
+    let (server, shutdown_handle) = DaemonServer::new_with_name_and_timestamp(
+        daemon_name,
+        root_path,
+        build_timestamp,
+        handler,
+        max_connections,
+    );
     let join_handle = spawn(async move {
         server.run().await.ok();
     });
@@ -157,7 +168,13 @@ async fn test_basic_streaming() -> Result<()> {
 
     // Connect client (note: this would normally auto-spawn, but we started manually)
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(&daemon_name, &root_path, daemon_exe, build_timestamp).await?;
+    let mut client = DaemonClient::connect_with_name_and_timestamp(
+        &daemon_name,
+        &root_path,
+        daemon_exe,
+        build_timestamp,
+    )
+    .await?;
 
     // Execute command and capture exit code
     let result = client.execute_command("Hello, World!".to_string()).await;
@@ -165,7 +182,7 @@ async fn test_basic_streaming() -> Result<()> {
     // Note: execute_command writes to stdout, so we can't easily capture it in this test
     // In a real integration test, we'd redirect stdout or use a different approach
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 0);  // Success exit code
+    assert_eq!(result.unwrap(), 0); // Success exit code
 
     // Cleanup
     stop_test_daemon(shutdown_handle, join_handle).await;
@@ -185,11 +202,17 @@ async fn test_chunked_output() -> Result<()> {
 
     // Connect and execute
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(&daemon_name, &root_path, daemon_exe, build_timestamp).await?;
+    let mut client = DaemonClient::connect_with_name_and_timestamp(
+        &daemon_name,
+        &root_path,
+        daemon_exe,
+        build_timestamp,
+    )
+    .await?;
 
     let result = client.execute_command("test".to_string()).await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 0);  // Success exit code
+    assert_eq!(result.unwrap(), 0); // Success exit code
 
     // Cleanup
     stop_test_daemon(shutdown_handle, join_handle).await;
@@ -209,7 +232,13 @@ async fn test_handler_error_reporting() -> Result<()> {
 
     // Connect and execute
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(&daemon_name, &root_path, daemon_exe, build_timestamp).await?;
+    let mut client = DaemonClient::connect_with_name_and_timestamp(
+        &daemon_name,
+        &root_path,
+        daemon_exe,
+        build_timestamp,
+    )
+    .await?;
 
     let result = client.execute_command("test".to_string()).await;
 
@@ -237,11 +266,16 @@ async fn test_multiple_sequential_commands() -> Result<()> {
 
     // Execute multiple commands sequentially
     for i in 1..=3 {
-        let mut client =
-            DaemonClient::connect_with_name_and_timestamp(&daemon_name, &root_path, daemon_exe.clone(), build_timestamp).await?;
+        let mut client = DaemonClient::connect_with_name_and_timestamp(
+            &daemon_name,
+            &root_path,
+            daemon_exe.clone(),
+            build_timestamp,
+        )
+        .await?;
         let result = client.execute_command(format!("Command {}", i)).await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 0);  // Success exit code
+        assert_eq!(result.unwrap(), 0); // Success exit code
 
         // Small delay between commands
         sleep(Duration::from_millis(50)).await;
@@ -265,7 +299,13 @@ async fn test_connection_close_during_processing() -> Result<()> {
 
     // Connect and start long-running command
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(&daemon_name, &root_path, daemon_exe, build_timestamp).await?;
+    let mut client = DaemonClient::connect_with_name_and_timestamp(
+        &daemon_name,
+        &root_path,
+        daemon_exe,
+        build_timestamp,
+    )
+    .await?;
 
     // Start the command and then drop the client to simulate connection close
     let command_handle =
@@ -360,8 +400,13 @@ async fn test_concurrent_clients() -> Result<()> {
         let daemon_name_clone = daemon_name.clone();
         let root_path_clone = root_path.clone();
         let handle = spawn(async move {
-            let mut client =
-                DaemonClient::connect_with_name_and_timestamp(&daemon_name_clone, &root_path_clone, daemon_exe_clone, build_timestamp).await?;
+            let mut client = DaemonClient::connect_with_name_and_timestamp(
+                &daemon_name_clone,
+                &root_path_clone,
+                daemon_exe_clone,
+                build_timestamp,
+            )
+            .await?;
             client
                 .execute_command(format!("concurrent-test-{}", i))
                 .await
@@ -375,7 +420,7 @@ async fn test_concurrent_clients() -> Result<()> {
         assert!(result.is_ok());
         let exit_code = result.unwrap();
         assert!(exit_code.is_ok());
-        assert_eq!(exit_code.unwrap(), 0);  // Success exit code
+        assert_eq!(exit_code.unwrap(), 0); // Success exit code
     }
 
     // Verify that we actually had concurrent execution
@@ -413,8 +458,13 @@ async fn test_concurrent_stress_10_plus_clients() -> Result<()> {
         let daemon_name_clone = daemon_name.clone();
         let root_path_clone = root_path.clone();
         let handle = spawn(async move {
-            let mut client =
-                DaemonClient::connect_with_name_and_timestamp(&daemon_name_clone, &root_path_clone, daemon_exe_clone, build_timestamp).await?;
+            let mut client = DaemonClient::connect_with_name_and_timestamp(
+                &daemon_name_clone,
+                &root_path_clone,
+                daemon_exe_clone,
+                build_timestamp,
+            )
+            .await?;
             client.execute_command(format!("stress-test-{}", i)).await
         });
         client_handles.push(handle);
@@ -479,8 +529,13 @@ async fn test_connection_limit() -> Result<()> {
         let daemon_name_clone = daemon_name.clone();
         let root_path_clone = root_path.clone();
         let handle = spawn(async move {
-            let mut client =
-                DaemonClient::connect_with_name_and_timestamp(&daemon_name_clone, &root_path_clone, daemon_exe_clone, build_timestamp).await?;
+            let mut client = DaemonClient::connect_with_name_and_timestamp(
+                &daemon_name_clone,
+                &root_path_clone,
+                daemon_exe_clone,
+                build_timestamp,
+            )
+            .await?;
             client.execute_command(format!("limit-test-{}", i)).await
         });
         client_handles.push(handle);
