@@ -112,7 +112,7 @@ mod transport;
 pub use client::DaemonClient;
 pub use error_context::ErrorContextBuffer;
 pub use server::{DaemonHandle, DaemonServer};
-pub use terminal::{ColorSupport, TerminalInfo, Theme};
+pub use terminal::{ColorSupport, TerminalInfo};
 
 #[cfg(test)]
 mod tests;
@@ -123,7 +123,7 @@ mod tests;
 pub mod prelude {
     pub use crate::{
         ColorSupport, CommandHandler, DaemonClient, DaemonHandle, DaemonServer, ErrorContextBuffer,
-        TerminalInfo, Theme,
+        TerminalInfo,
     };
     pub use anyhow::Result;
     pub use async_trait::async_trait;

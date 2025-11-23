@@ -300,7 +300,6 @@ where
                             terminal_height = ?terminal_info.height,
                             is_tty = terminal_info.is_tty,
                             color_support = ?terminal_info.color_support,
-                            theme = ?terminal_info.theme,
                             "Received command with terminal info"
                         );
 

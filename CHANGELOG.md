@@ -14,8 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Terminal info detection: width, height, TTY status, color support, theme (light/dark)
-- New types: `TerminalInfo`, `ColorSupport`, `Theme`
+- Terminal info detection: width, height, TTY status, color support
+- New types: `TerminalInfo`, `ColorSupport`
 
 ### Migration
 

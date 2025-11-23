@@ -314,7 +314,6 @@ impl DaemonClient {
             height = ?terminal_info.height,
             is_tty = terminal_info.is_tty,
             color_support = ?terminal_info.color_support,
-            theme = ?terminal_info.theme,
             "Detected terminal info"
         );
 

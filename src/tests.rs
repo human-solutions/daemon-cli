@@ -57,7 +57,6 @@ fn test_socket_message_serialization() {
         height: Some(24),
         is_tty: true,
         color_support: ColorSupport::Truecolor,
-        theme: Some(Theme::Dark),
     };
     let command_msg = SocketMessage::Command {
         command: "test command".to_string(),
@@ -75,7 +74,6 @@ fn test_socket_message_serialization() {
             assert_eq!(ti.height, Some(24));
             assert_eq!(ti.is_tty, true);
             assert_eq!(ti.color_support, ColorSupport::Truecolor);
-            assert_eq!(ti.theme, Some(Theme::Dark));
         }
         _ => panic!("Wrong message type"),
     }
@@ -124,7 +122,6 @@ async fn test_handler_basic_output() {
         height: Some(24),
         is_tty: true,
         color_support: ColorSupport::Basic16,
-        theme: None,
     };
 
     let result = handler.handle("test", terminal_info, &mut output, cancel).await;
@@ -168,7 +165,6 @@ async fn test_handler_with_cancellation() {
         height: None,
         is_tty: false,
         color_support: ColorSupport::None,
-        theme: None,
     };
 
     // Cancel immediately

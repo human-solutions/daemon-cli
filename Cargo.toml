@@ -16,7 +16,6 @@ scopeguard = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 parking_lot = "0.12"
-termbg = "0.6"
 terminal_size = "0.4"
 supports-color = "3.0"
 
