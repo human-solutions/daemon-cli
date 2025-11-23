@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2025-01-23
+
+### Added
+
+- **Force-stop functionality**: New `DaemonClient::force_stop()` method for programmatic daemon shutdown
+  - Implements graceful shutdown with SIGTERM followed by SIGKILL fallback after 2 second timeout
+  - Automatically cleans up PID and socket files
+  - Returns clear error messages when daemon is not running
+- CLI example `--stop` flag: `cargo run --example cli -- --stop`
+- Public exports of `pid_path()` and `socket_path()` helper functions
+- `nix` crate dependency for portable Unix signal handling
+
+### Example
+
+```rust
+use daemon_cli::prelude::*;
+
+let client = DaemonClient::connect("/path/to/project").await?;
+client.force_stop().await?;
+```
+
 ## [0.4.0] - 2025-01-15
 
 ### Changed (BREAKING)
