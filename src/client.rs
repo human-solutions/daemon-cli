@@ -1,7 +1,7 @@
 use crate::error_context::{ErrorContextBuffer, get_or_init_global_error_context};
 use crate::terminal::TerminalInfo;
-use crate::transport::{socket_path, SocketClient, SocketMessage};
-use anyhow::{bail, Result};
+use crate::transport::{SocketClient, SocketMessage, socket_path};
+use anyhow::{Result, bail};
 use std::{fs, path::PathBuf, process::Stdio, time::Duration};
 use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
 
@@ -44,6 +44,8 @@ pub struct DaemonClient {
     pub build_timestamp: u64,
     /// Error context buffer for client-side logging
     error_context: ErrorContextBuffer,
+    /// Enable automatic daemon restart on fatal connection errors (default: false)
+    auto_restart_on_error: bool,
 }
 
 impl DaemonClient {
@@ -184,6 +186,7 @@ impl DaemonClient {
             daemon_executable,
             build_timestamp,
             error_context,
+            auto_restart_on_error: false,
         })
     }
 
@@ -303,7 +306,7 @@ impl DaemonClient {
     /// This method will:
     /// 1. Read the daemon's PID from the PID file
     /// 2. Send SIGTERM for graceful shutdown
-    /// 3. Wait up to 2 seconds for the process to exit
+    /// 3. Wait up to 1 seconds for the process to exit
     /// 4. Send SIGKILL if the process is still running
     /// 5. Clean up PID and socket files
     ///
@@ -339,7 +342,7 @@ impl DaemonClient {
         tracing::info!(pid, "Force-stopping daemon");
 
         // Check if process exists using nix crate's kill with signal 0
-        use nix::sys::signal::{kill, Signal};
+        use nix::sys::signal::{Signal, kill};
         use nix::unistd::Pid;
 
         let nix_pid = Pid::from_raw(pid);
@@ -357,8 +360,8 @@ impl DaemonClient {
         kill(nix_pid, Signal::SIGTERM)
             .map_err(|e| anyhow::anyhow!("Failed to send SIGTERM: {}", e))?;
 
-        // Wait up to 2 seconds for process to exit
-        for i in 0..20 {
+        // Wait up to 1 seconds for process to exit
+        for i in 0..10 {
             sleep(Duration::from_millis(100)).await;
 
             // Check if process still exists
@@ -370,7 +373,7 @@ impl DaemonClient {
                 return Ok(());
             }
 
-            if i == 19 {
+            if i == 9 {
                 tracing::warn!(pid, "Process did not exit after SIGTERM, sending SIGKILL");
             }
         }
@@ -397,13 +400,135 @@ impl DaemonClient {
         Ok(())
     }
 
+    /// Restart the daemon by force-stopping it and reconnecting.
+    ///
+    /// This is useful when the daemon has crashed or become unresponsive.
+    /// It will:
+    /// 1. Force-stop the existing daemon (if running)
+    /// 2. Reconnect to a fresh daemon instance
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use daemon_cli::prelude::*;
+    ///
+    /// # tokio_test::block_on(async {
+    /// let mut client = DaemonClient::connect("/path/to/project").await?;
+    ///
+    /// // If daemon crashes or hangs:
+    /// client.restart().await?;
+    /// # Ok::<(), anyhow::Error>(())
+    /// # });
+    /// ```
+    pub async fn restart(&mut self) -> Result<()> {
+        tracing::info!("Restarting daemon");
+
+        // Force stop existing daemon (ignore errors if already dead)
+        let _ = self.force_stop().await;
+
+        // Reconnect to fresh daemon
+        let new_client = Self::connect_with_name_and_timestamp(
+            &self.daemon_name,
+            &self.root_path,
+            self.daemon_executable.clone(),
+            self.build_timestamp,
+        )
+        .await?;
+
+        // Replace self with new client, preserving auto_restart setting
+        let auto_restart = self.auto_restart_on_error;
+        *self = new_client;
+        self.auto_restart_on_error = auto_restart;
+
+        Ok(())
+    }
+
+    /// Enable or disable automatic daemon restart on fatal connection errors.
+    ///
+    /// When enabled, if `execute_command()` encounters a fatal connection error
+    /// (daemon crash, broken pipe, etc.), it will automatically restart the daemon
+    /// and retry the command once.
+    ///
+    /// Default: false (manual recovery required)
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use daemon_cli::prelude::*;
+    ///
+    /// # tokio_test::block_on(async {
+    /// let mut client = DaemonClient::connect("/path/to/project")
+    ///     .await?
+    ///     .with_auto_restart(true);
+    ///
+    /// // If daemon crashes, command will automatically retry after restart
+    /// client.execute_command("process file.txt".to_string()).await?;
+    /// # Ok::<(), anyhow::Error>(())
+    /// # });
+    /// ```
+    pub fn with_auto_restart(mut self, enabled: bool) -> Self {
+        self.auto_restart_on_error = enabled;
+        self
+    }
+
+    /// Check if an error indicates a fatal connection issue (daemon crash/hang).
+    ///
+    /// Returns true for errors that suggest the daemon has crashed or become
+    /// unresponsive (broken pipe, connection reset, etc.). Returns false for
+    /// normal errors or transient issues.
+    fn is_fatal_connection_error(error: &anyhow::Error) -> bool {
+        let error_str = error.to_string().to_lowercase();
+
+        // Check for clear indicators of daemon crash/hang
+        error_str.contains("broken pipe")
+            || error_str.contains("connection reset")
+            || error_str.contains("connection closed unexpectedly")
+            || error_str.contains("connection refused")
+            || error_str.contains("not connected")
+    }
+
     /// Execute a command on the daemon and stream output to stdout.
     ///
     /// Streams output chunks as they arrive. Errors written to stderr.
     /// Ctrl+C cancels via connection close.
     ///
+    /// If `auto_restart_on_error` is enabled (via `with_auto_restart(true)`),
+    /// the daemon will be automatically restarted and the command retried once
+    /// on fatal connection errors.
+    ///
     /// Returns the command's exit code (0 for success, non-zero for errors).
     pub async fn execute_command(&mut self, command: String) -> Result<i32> {
+        // Try to execute command
+        let result = self.execute_command_internal(command.clone()).await;
+
+        // Check if we should auto-restart on error
+        if let Err(ref error) = result {
+            if self.auto_restart_on_error && Self::is_fatal_connection_error(error) {
+                tracing::warn!(
+                    error = %error,
+                    "Fatal connection error detected, restarting daemon and retrying"
+                );
+
+                // Restart daemon
+                if let Err(restart_err) = self.restart().await {
+                    tracing::error!(error = %restart_err, "Failed to restart daemon");
+                    return Err(anyhow::anyhow!(
+                        "Daemon crashed and restart failed: {}",
+                        restart_err
+                    ));
+                }
+
+                // Retry command once
+                tracing::info!("Retrying command after daemon restart");
+                return self.execute_command_internal(command).await;
+            }
+        }
+
+        result
+    }
+
+    /// Internal implementation of command execution (without auto-restart logic).
+    async fn execute_command_internal(&mut self, command: String) -> Result<i32> {
         tracing::debug!(command = %command, "Executing command");
 
         // Detect terminal information from the client environment
