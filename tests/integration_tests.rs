@@ -598,3 +598,57 @@ async fn test_connection_limit() -> Result<()> {
 
     Ok(())
 }
+
+// Note: force_stop() tests are commented out because they send SIGTERM to the daemon process.
+// In integration tests, the daemon runs as a tokio task within the test process, so sending
+// SIGTERM would kill the test itself. The force_stop functionality is tested manually via
+// the CLI example: `cargo run --example cli -- --stop`
+//
+// Uncomment these tests if you want to test with an actual separate daemon process.
+
+// #[tokio::test]
+// async fn test_force_stop() -> Result<()> {
+//     // This test would kill the test process itself since daemon runs in-process
+//     Ok(())
+// }
+
+#[tokio::test]
+async fn test_force_stop_not_running() -> Result<()> {
+    let (daemon_name, root_path) = generate_test_daemon_config();
+    let build_timestamp = 1234567900;
+
+    // We need to spawn a daemon first to get a client, then stop it gracefully
+    let daemon_exe = PathBuf::from("./target/debug/examples/cli");
+    let handler = EchoHandler;
+    let (shutdown_handle, join_handle) =
+        start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
+
+    let client = DaemonClient::connect_with_name_and_timestamp(
+        &daemon_name,
+        &root_path,
+        daemon_exe.clone(),
+        build_timestamp,
+    )
+    .await?;
+
+    // Manually stop the daemon process first using the shutdown handle
+    shutdown_handle.shutdown();
+    let _ = tokio::time::timeout(Duration::from_secs(1), join_handle).await;
+
+    // Wait for cleanup
+    sleep(Duration::from_millis(500)).await;
+
+    // Now try to force_stop when daemon is not running
+    let result = client.force_stop().await;
+
+    // Should get an error indicating daemon is not running
+    assert!(result.is_err(), "Should error when daemon not running");
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("not running") || error_msg.contains("no PID file"),
+        "Error should indicate daemon is not running, got: {}",
+        error_msg
+    );
+
+    Ok(())
+}

@@ -138,6 +138,9 @@ pub mod test_utils {
     pub use crate::transport::{SocketClient, SocketMessage};
 }
 
+// Re-export transport utilities for integration tests
+pub use transport::{pid_path, socket_path};
+
 /// Get the modification time of the current executable binary.
 ///
 /// Returns the executable's mtime as seconds since Unix epoch. This is used

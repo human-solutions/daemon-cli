@@ -298,6 +298,105 @@ impl DaemonClient {
         sleep(Duration::from_millis(100)).await;
     }
 
+    /// Force-stop the daemon process.
+    ///
+    /// This method will:
+    /// 1. Read the daemon's PID from the PID file
+    /// 2. Send SIGTERM for graceful shutdown
+    /// 3. Wait up to 2 seconds for the process to exit
+    /// 4. Send SIGKILL if the process is still running
+    /// 5. Clean up PID and socket files
+    ///
+    /// Returns an error if the daemon is not running or cannot be stopped.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use daemon_cli::prelude::*;
+    ///
+    /// # tokio_test::block_on(async {
+    /// let client = DaemonClient::connect("/path/to/project").await?;
+    /// client.force_stop().await?;
+    /// # Ok::<(), anyhow::Error>(())
+    /// # });
+    /// ```
+    pub async fn force_stop(&self) -> Result<()> {
+        let pid_file = crate::transport::pid_path(&self.daemon_name, &self.root_path);
+        let socket_path = socket_path(&self.daemon_name, &self.root_path);
+
+        // Read PID file
+        if !pid_file.exists() {
+            bail!("Daemon is not running (no PID file found)");
+        }
+
+        let pid_str = fs::read_to_string(&pid_file)
+            .map_err(|e| anyhow::anyhow!("Failed to read PID file: {}", e))?;
+        let pid = pid_str
+            .trim()
+            .parse::<i32>()
+            .map_err(|e| anyhow::anyhow!("Invalid PID in file: {}", e))?;
+
+        tracing::info!(pid, "Force-stopping daemon");
+
+        // Check if process exists using nix crate's kill with signal 0
+        use nix::sys::signal::{kill, Signal};
+        use nix::unistd::Pid;
+
+        let nix_pid = Pid::from_raw(pid);
+
+        // Verify process exists
+        if let Err(_) = kill(nix_pid, None) {
+            tracing::warn!(pid, "Process not running, cleaning up files");
+            let _ = fs::remove_file(&pid_file);
+            let _ = fs::remove_file(&socket_path);
+            bail!("Daemon process (PID {}) is not running", pid);
+        }
+
+        // Send SIGTERM for graceful shutdown
+        tracing::debug!(pid, "Sending SIGTERM");
+        kill(nix_pid, Signal::SIGTERM)
+            .map_err(|e| anyhow::anyhow!("Failed to send SIGTERM: {}", e))?;
+
+        // Wait up to 2 seconds for process to exit
+        for i in 0..20 {
+            sleep(Duration::from_millis(100)).await;
+
+            // Check if process still exists
+            if let Err(_) = kill(nix_pid, None) {
+                // Process has exited
+                tracing::info!(pid, "Daemon stopped gracefully");
+                let _ = fs::remove_file(&pid_file);
+                let _ = fs::remove_file(&socket_path);
+                return Ok(());
+            }
+
+            if i == 19 {
+                tracing::warn!(pid, "Process did not exit after SIGTERM, sending SIGKILL");
+            }
+        }
+
+        // Process still running, send SIGKILL
+        tracing::debug!(pid, "Sending SIGKILL");
+        kill(nix_pid, Signal::SIGKILL)
+            .map_err(|e| anyhow::anyhow!("Failed to send SIGKILL: {}", e))?;
+
+        // Wait briefly for SIGKILL to take effect
+        sleep(Duration::from_millis(500)).await;
+
+        // Verify process is dead
+        if let Ok(_) = kill(nix_pid, None) {
+            bail!("Failed to kill daemon process (PID {})", pid);
+        }
+
+        tracing::info!(pid, "Daemon force-stopped with SIGKILL");
+
+        // Clean up files
+        let _ = fs::remove_file(&pid_file);
+        let _ = fs::remove_file(&socket_path);
+
+        Ok(())
+    }
+
     /// Execute a command on the daemon and stream output to stdout.
     ///
     /// Streams output chunks as they arrive. Errors written to stderr.

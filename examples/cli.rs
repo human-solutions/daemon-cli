@@ -10,9 +10,11 @@ use tokio::io::{self, AsyncReadExt};
 async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
-    // Check if first argument is "daemon", otherwise run as client
+    // Check if first argument is "daemon" or "--stop", otherwise run as client
     if args.len() >= 2 && args[1] == "daemon" {
         run_daemon_mode().await
+    } else if args.len() >= 2 && args[1] == "--stop" {
+        run_stop_mode().await
     } else {
         run_client_mode().await
     }
@@ -25,6 +27,7 @@ fn print_usage() {
     println!();
     println!("Modes:");
     println!("  daemon         Start daemon server");
+    println!("  --stop         Force-stop the running daemon");
     println!("  (default)      Run as client (reads stdin, sends to daemon, outputs to stdout)");
     println!();
     println!("Note: Both daemon and client use current directory as scope");
@@ -38,12 +41,28 @@ fn print_usage() {
     println!("  echo \"process file.txt\" | cargo run --example cli");
     println!("  echo \"long 5\" | cargo run --example cli");
     println!();
+    println!("  # Force-stop the daemon");
+    println!("  cargo run --example cli -- --stop");
+    println!();
     println!("Available commands:");
     println!("  status              - Get daemon status");
     println!("  uptime              - Get daemon uptime");
     println!("  process [file]      - Process a file (simulated)");
     println!("  long [seconds]      - Long-running task (test cancellation with Ctrl+C)");
     println!("  echo [message]      - Echo a message");
+}
+
+async fn run_stop_mode() -> Result<()> {
+    let root_path = env::current_dir()?.to_string_lossy().to_string();
+
+    // Connect to daemon to get access to force_stop method
+    let client = DaemonClient::connect(&root_path).await?;
+
+    println!("Stopping daemon...");
+    client.force_stop().await?;
+    println!("Daemon stopped successfully");
+
+    Ok(())
 }
 
 async fn run_daemon_mode() -> Result<()> {
