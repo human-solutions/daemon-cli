@@ -306,7 +306,7 @@ impl DaemonClient {
     /// This method will:
     /// 1. Read the daemon's PID from the PID file
     /// 2. Send SIGTERM for graceful shutdown
-    /// 3. Wait up to 1 seconds for the process to exit
+    /// 3. Wait up to 1 second for the process to exit
     /// 4. Send SIGKILL if the process is still running
     /// 5. Clean up PID and socket files
     ///
@@ -329,6 +329,8 @@ impl DaemonClient {
 
         // Read PID file
         if !pid_file.exists() {
+            // Best-effort cleanup of potentially stale socket
+            let _ = fs::remove_file(&socket_path);
             bail!("Daemon is not running (no PID file found)");
         }
 
@@ -348,11 +350,34 @@ impl DaemonClient {
         let nix_pid = Pid::from_raw(pid);
 
         // Verify process exists
-        if let Err(_) = kill(nix_pid, None) {
-            tracing::warn!(pid, "Process not running, cleaning up files");
-            let _ = fs::remove_file(&pid_file);
-            let _ = fs::remove_file(&socket_path);
-            bail!("Daemon process (PID {}) is not running", pid);
+        match kill(nix_pid, None) {
+            Ok(_) => {
+                // Process exists and we can signal it
+            }
+            Err(e) => {
+                use nix::errno::Errno;
+                match e {
+                    Errno::ESRCH => {
+                        // Process doesn't exist, clean up files
+                        tracing::warn!(pid, "Process not running, cleaning up files");
+                        let _ = fs::remove_file(&pid_file);
+                        let _ = fs::remove_file(&socket_path);
+                        bail!("Daemon process (PID {}) is not running", pid);
+                    }
+                    Errno::EPERM => {
+                        // Permission denied - process exists but we can't signal it
+                        bail!(
+                            "Permission denied: cannot signal daemon process (PID {}). \
+                             Process appears to be running but owned by another user.",
+                            pid
+                        );
+                    }
+                    _ => {
+                        // Other error - be conservative and don't delete files
+                        bail!("Error checking daemon process (PID {}): {}", pid, e);
+                    }
+                }
+            }
         }
 
         // Send SIGTERM for graceful shutdown
@@ -365,12 +390,35 @@ impl DaemonClient {
             sleep(Duration::from_millis(100)).await;
 
             // Check if process still exists
-            if let Err(_) = kill(nix_pid, None) {
-                // Process has exited
-                tracing::info!(pid, "Daemon stopped gracefully");
-                let _ = fs::remove_file(&pid_file);
-                let _ = fs::remove_file(&socket_path);
-                return Ok(());
+            match kill(nix_pid, None) {
+                Ok(_) => {
+                    // Process still running, continue waiting
+                }
+                Err(e) => {
+                    use nix::errno::Errno;
+                    match e {
+                        Errno::ESRCH => {
+                            // Process has exited
+                            tracing::info!(pid, "Daemon stopped gracefully");
+                            let _ = fs::remove_file(&pid_file);
+                            let _ = fs::remove_file(&socket_path);
+                            return Ok(());
+                        }
+                        Errno::EPERM => {
+                            // Permission denied - we can't verify if it's still running
+                            // This is unusual during shutdown wait, but be safe
+                            bail!(
+                                "Permission denied while checking daemon process (PID {}). \
+                                 Cannot verify shutdown status.",
+                                pid
+                            );
+                        }
+                        _ => {
+                            // Other error during wait - be conservative
+                            bail!("Error checking daemon process (PID {}) during shutdown: {}", pid, e);
+                        }
+                    }
+                }
             }
 
             if i == 9 {
@@ -387,8 +435,35 @@ impl DaemonClient {
         sleep(Duration::from_millis(500)).await;
 
         // Verify process is dead
-        if let Ok(_) = kill(nix_pid, None) {
-            bail!("Failed to kill daemon process (PID {})", pid);
+        match kill(nix_pid, None) {
+            Ok(_) => {
+                // Process still exists after SIGKILL - this is bad
+                bail!("Failed to kill daemon process (PID {})", pid);
+            }
+            Err(e) => {
+                use nix::errno::Errno;
+                match e {
+                    Errno::ESRCH => {
+                        // Process is gone, success
+                    }
+                    Errno::EPERM => {
+                        // Permission denied after SIGKILL - can't verify
+                        bail!(
+                            "Permission denied: cannot verify daemon process (PID {}) was killed. \
+                             SIGKILL was sent but status unclear.",
+                            pid
+                        );
+                    }
+                    _ => {
+                        // Other error - unclear if process is dead
+                        bail!(
+                            "Error verifying daemon process (PID {}) after SIGKILL: {}",
+                            pid,
+                            e
+                        );
+                    }
+                }
+            }
         }
 
         tracing::info!(pid, "Daemon force-stopped with SIGKILL");
