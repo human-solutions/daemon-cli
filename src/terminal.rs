@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::io::IsTerminal;
-use std::time::Duration;
 
 /// Terminal information detected from the client environment
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -13,8 +12,6 @@ pub struct TerminalInfo {
     pub is_tty: bool,
     /// Level of color support (always returns at least ColorSupport::None)
     pub color_support: ColorSupport,
-    /// Terminal theme - Light or Dark (can fail if terminal doesn't respond)
-    pub theme: Option<Theme>,
 }
 
 /// Level of color support in the terminal
@@ -30,13 +27,6 @@ pub enum ColorSupport {
     Truecolor,
 }
 
-/// Terminal theme (light or dark background)
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Theme {
-    Light,
-    Dark,
-}
-
 impl TerminalInfo {
     /// Detect terminal information from the current environment
     ///
@@ -44,7 +34,6 @@ impl TerminalInfo {
     /// - Terminal size (width/height) - fast, non-blocking
     /// - TTY detection - fast, non-blocking
     /// - Color support - fast, non-blocking
-    /// - Theme detection - blocking with 100ms timeout (uses termbg)
     ///
     /// Individual detections can fail, but the function always returns
     /// a TerminalInfo struct with whatever information could be gathered.
@@ -58,29 +47,11 @@ impl TerminalInfo {
 
         let color_support = detect_color_support();
 
-        // Blocking theme detection - only if TTY and wrap in spawn_blocking
-        let theme = if is_tty {
-            tokio::task::spawn_blocking(|| {
-                termbg::theme(Duration::from_millis(100))
-                    .ok()
-                    .map(|t| match t {
-                        termbg::Theme::Light => Theme::Light,
-                        termbg::Theme::Dark => Theme::Dark,
-                    })
-            })
-            .await
-            .ok()
-            .flatten()
-        } else {
-            None
-        };
-
         TerminalInfo {
             width,
             height,
             is_tty,
             color_support,
-            theme,
         }
     }
 }

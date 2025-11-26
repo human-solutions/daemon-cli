@@ -214,7 +214,6 @@ async fn test_version_handshake_before_command() -> Result<()> {
         height: Some(24),
         is_tty: true,
         color_support: ColorSupport::Basic16,
-        theme: None,
     };
     client
         .send_message(&SocketMessage::Command {
@@ -263,7 +262,6 @@ async fn test_command_without_handshake_fails() -> Result<()> {
         height: None,
         is_tty: false,
         color_support: ColorSupport::None,
-        theme: None,
     };
     client
         .send_message(&SocketMessage::Command {

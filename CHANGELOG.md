@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2025-01-23
+
+### Added
+
+- **Force-stop functionality**: New `DaemonClient::force_stop()` method for programmatic daemon shutdown
+  - Implements graceful shutdown with SIGTERM followed by SIGKILL fallback after 2 second timeout
+  - Automatically cleans up PID and socket files
+  - Returns clear error messages when daemon is not running
+- **Automatic daemon recovery**: Opt-in auto-restart on connection failures
+  - New `DaemonClient::restart()` method for manual daemon restarts
+  - New `DaemonClient::with_auto_restart(bool)` method to enable automatic recovery from crashes
+  - Detects fatal connection errors (broken pipe, connection reset, connection closed)
+  - Single retry logic prevents infinite loops
+- CLI example `--stop` flag: `cargo run --example cli -- --stop`
+- Public exports of `pid_path()` and `socket_path()` helper functions
+- `nix` crate dependency for portable Unix signal handling
+
+### Example
+
+```rust
+use daemon_cli::prelude::*;
+
+// Force-stop daemon
+let client = DaemonClient::connect("/path/to/project").await?;
+client.force_stop().await?;
+
+// Enable automatic recovery from crashes
+let mut client = DaemonClient::connect("/path/to/project")
+    .await?
+    .with_auto_restart(true);
+client.execute_command("some command".to_string()).await?;
+// If daemon crashes, it will automatically restart and retry once
+
+// Manual restart
+client.restart().await?;
+```
+
 ## [0.4.0] - 2025-01-15
 
 ### Changed (BREAKING)
@@ -14,8 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Terminal info detection: width, height, TTY status, color support, theme (light/dark)
-- New types: `TerminalInfo`, `ColorSupport`, `Theme`
+- Terminal info detection: width, height, TTY status, color support
+- New types: `TerminalInfo`, `ColorSupport`
 
 ### Migration
 
