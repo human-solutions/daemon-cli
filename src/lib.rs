@@ -105,6 +105,7 @@ use tokio_util::sync::CancellationToken;
 
 mod client;
 mod error_context;
+mod process;
 mod server;
 mod terminal;
 mod transport;

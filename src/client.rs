@@ -1,6 +1,7 @@
 use crate::error_context::{ErrorContextBuffer, get_or_init_global_error_context};
+use crate::process::{TerminateResult, kill_process, process_exists, terminate_process};
 use crate::terminal::TerminalInfo;
-use crate::transport::{SocketClient, SocketMessage, socket_path};
+use crate::transport::{SocketClient, SocketMessage, daemon_socket_exists, socket_path};
 use anyhow::{Result, bail};
 use std::{fs, path::PathBuf, process::Stdio, time::Duration};
 use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
@@ -101,7 +102,7 @@ impl DaemonClient {
             // Daemon not running or not responsive - spawn our own
             tracing::debug!("No existing daemon found, spawning new daemon");
 
-            if socket_path.exists() {
+            if daemon_socket_exists(daemon_name, root_path) {
                 // Clean up stale socket file
                 tracing::debug!("Cleaning up stale socket file");
                 let _ = fs::remove_file(&socket_path);
@@ -247,7 +248,6 @@ impl DaemonClient {
             .map_err(|e| anyhow::anyhow!("Failed to spawn daemon process: {}", e))?;
 
         // Wait for daemon to become ready
-        let socket_path = socket_path(daemon_name, root_path);
         let mut attempts = 0;
         const MAX_ATTEMPTS: u32 = 50; // 5 seconds total
 
@@ -266,7 +266,7 @@ impl DaemonClient {
             }
 
             // Try to connect
-            if socket_path.exists()
+            if daemon_socket_exists(daemon_name, root_path)
                 && let Ok(socket_client) = SocketClient::connect(daemon_name, root_path).await
             {
                 // Successfully connected - daemon is ready
@@ -293,7 +293,7 @@ impl DaemonClient {
             && let Ok(pid) = pid_str.trim().parse::<u32>()
         {
             tracing::debug!(pid, "Cleaning up stale daemon process");
-            let _ = Command::new("kill").arg(pid.to_string()).output().await;
+            kill_process(pid).await;
         }
         // Remove stale PID file
         let _ = fs::remove_file(&pid_file);
@@ -305,10 +305,17 @@ impl DaemonClient {
     ///
     /// This method will:
     /// 1. Read the daemon's PID from the PID file
-    /// 2. Send SIGTERM for graceful shutdown
-    /// 3. Wait up to 1 second for the process to exit
-    /// 4. Send SIGKILL if the process is still running
+    /// 2. Attempt graceful shutdown (Unix: SIGTERM, Windows: immediate termination)
+    /// 3. Wait up to 1 second for the process to exit (Unix only)
+    /// 4. Force terminate if still running (Unix: SIGKILL)
     /// 5. Clean up PID and socket files
+    ///
+    /// # Platform Behavior
+    ///
+    /// - **Unix**: Sends SIGTERM for graceful shutdown, waits up to 1 second,
+    ///   then sends SIGKILL if still running.
+    /// - **Windows**: Immediately terminates the process. Windows has no
+    ///   SIGTERM equivalent for console applications.
     ///
     /// Returns an error if the daemon is not running or cannot be stopped.
     ///
@@ -325,152 +332,64 @@ impl DaemonClient {
     /// ```
     pub async fn force_stop(&self) -> Result<()> {
         let pid_file = crate::transport::pid_path(&self.daemon_name, &self.root_path);
-        let socket_path = socket_path(&self.daemon_name, &self.root_path);
+        let sock_path = socket_path(&self.daemon_name, &self.root_path);
 
         // Read PID file
         if !pid_file.exists() {
             // Best-effort cleanup of potentially stale socket
-            let _ = fs::remove_file(&socket_path);
+            let _ = fs::remove_file(&sock_path);
             bail!("Daemon is not running (no PID file found)");
         }
 
         let pid_str = fs::read_to_string(&pid_file)
             .map_err(|e| anyhow::anyhow!("Failed to read PID file: {}", e))?;
-        let pid = pid_str
+        let pid: u32 = pid_str
             .trim()
-            .parse::<i32>()
+            .parse()
             .map_err(|e| anyhow::anyhow!("Invalid PID in file: {}", e))?;
 
         tracing::info!(pid, "Force-stopping daemon");
 
-        // Check if process exists using nix crate's kill with signal 0
-        use nix::sys::signal::{Signal, kill};
-        use nix::unistd::Pid;
-
-        let nix_pid = Pid::from_raw(pid);
-
-        // Verify process exists
-        match kill(nix_pid, None) {
-            Ok(_) => {
-                // Process exists and we can signal it
+        // Check if process exists
+        match process_exists(pid) {
+            Ok(true) => {
+                // Process exists, continue
+            }
+            Ok(false) => {
+                // Process doesn't exist, clean up files
+                tracing::warn!(pid, "Process not running, cleaning up files");
+                let _ = fs::remove_file(&pid_file);
+                let _ = fs::remove_file(&sock_path);
+                bail!("Daemon process (PID {}) is not running", pid);
             }
             Err(e) => {
-                use nix::errno::Errno;
-                match e {
-                    Errno::ESRCH => {
-                        // Process doesn't exist, clean up files
-                        tracing::warn!(pid, "Process not running, cleaning up files");
-                        let _ = fs::remove_file(&pid_file);
-                        let _ = fs::remove_file(&socket_path);
-                        bail!("Daemon process (PID {}) is not running", pid);
-                    }
-                    Errno::EPERM => {
-                        // Permission denied - process exists but we can't signal it
-                        bail!(
-                            "Permission denied: cannot signal daemon process (PID {}). \
-                             Process appears to be running but owned by another user.",
-                            pid
-                        );
-                    }
-                    _ => {
-                        // Other error - be conservative and don't delete files
-                        bail!("Error checking daemon process (PID {}): {}", pid, e);
-                    }
-                }
+                bail!("Error checking daemon process (PID {}): {}", pid, e);
             }
         }
 
-        // Send SIGTERM for graceful shutdown
-        tracing::debug!(pid, "Sending SIGTERM");
-        kill(nix_pid, Signal::SIGTERM)
-            .map_err(|e| anyhow::anyhow!("Failed to send SIGTERM: {}", e))?;
-
-        // Wait up to 1 seconds for process to exit
-        for i in 0..10 {
-            sleep(Duration::from_millis(100)).await;
-
-            // Check if process still exists
-            match kill(nix_pid, None) {
-                Ok(_) => {
-                    // Process still running, continue waiting
-                }
-                Err(e) => {
-                    use nix::errno::Errno;
-                    match e {
-                        Errno::ESRCH => {
-                            // Process has exited
-                            tracing::info!(pid, "Daemon stopped gracefully");
-                            let _ = fs::remove_file(&pid_file);
-                            let _ = fs::remove_file(&socket_path);
-                            return Ok(());
-                        }
-                        Errno::EPERM => {
-                            // Permission denied - we can't verify if it's still running
-                            // This is unusual during shutdown wait, but be safe
-                            bail!(
-                                "Permission denied while checking daemon process (PID {}). \
-                                 Cannot verify shutdown status.",
-                                pid
-                            );
-                        }
-                        _ => {
-                            // Other error during wait - be conservative
-                            bail!("Error checking daemon process (PID {}) during shutdown: {}", pid, e);
-                        }
-                    }
-                }
+        // Terminate with 1 second graceful timeout (Unix only; Windows is immediate)
+        match terminate_process(pid, 1000).await {
+            TerminateResult::Terminated => {
+                tracing::info!(pid, "Daemon stopped");
             }
-
-            if i == 9 {
-                tracing::warn!(pid, "Process did not exit after SIGTERM, sending SIGKILL");
+            TerminateResult::AlreadyDead => {
+                tracing::info!(pid, "Daemon was already stopped");
+            }
+            TerminateResult::PermissionDenied => {
+                bail!(
+                    "Permission denied: cannot stop daemon process (PID {}). \
+                     Process appears to be running but owned by another user.",
+                    pid
+                );
+            }
+            TerminateResult::Error(e) => {
+                bail!("Failed to stop daemon (PID {}): {}", pid, e);
             }
         }
-
-        // Process still running, send SIGKILL
-        tracing::debug!(pid, "Sending SIGKILL");
-        kill(nix_pid, Signal::SIGKILL)
-            .map_err(|e| anyhow::anyhow!("Failed to send SIGKILL: {}", e))?;
-
-        // Wait briefly for SIGKILL to take effect
-        sleep(Duration::from_millis(500)).await;
-
-        // Verify process is dead
-        match kill(nix_pid, None) {
-            Ok(_) => {
-                // Process still exists after SIGKILL - this is bad
-                bail!("Failed to kill daemon process (PID {})", pid);
-            }
-            Err(e) => {
-                use nix::errno::Errno;
-                match e {
-                    Errno::ESRCH => {
-                        // Process is gone, success
-                    }
-                    Errno::EPERM => {
-                        // Permission denied after SIGKILL - can't verify
-                        bail!(
-                            "Permission denied: cannot verify daemon process (PID {}) was killed. \
-                             SIGKILL was sent but status unclear.",
-                            pid
-                        );
-                    }
-                    _ => {
-                        // Other error - unclear if process is dead
-                        bail!(
-                            "Error verifying daemon process (PID {}) after SIGKILL: {}",
-                            pid,
-                            e
-                        );
-                    }
-                }
-            }
-        }
-
-        tracing::info!(pid, "Daemon force-stopped with SIGKILL");
 
         // Clean up files
         let _ = fs::remove_file(&pid_file);
-        let _ = fs::remove_file(&socket_path);
+        let _ = fs::remove_file(&sock_path);
 
         Ok(())
     }
