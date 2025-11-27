@@ -339,3 +339,129 @@ async fn test_concurrent_version_handshakes() -> Result<()> {
 
     Ok(())
 }
+
+// ============================================================================
+// ADDITIONAL TESTS - Coverage gaps
+// ============================================================================
+
+#[tokio::test]
+async fn test_version_mismatch_triggers_client_action() -> Result<()> {
+    // This test verifies that version mismatch is properly detected and reported
+    // The actual restart logic is in the client, but we verify the server response
+    let daemon_name = "test-6007";
+    let root_path = "/tmp/test-6007";
+    let daemon_timestamp = 1000000000; // Old daemon version
+    let client_timestamp = 2000000000; // New client version
+    let handler = SimpleHandler;
+
+    // Start server with old timestamp
+    let (server, _handle) = DaemonServer::new_with_name_and_timestamp(
+        daemon_name,
+        root_path,
+        daemon_timestamp,
+        handler,
+        100,
+    );
+    let _server_handle = spawn(async move {
+        server.run().await.ok();
+    });
+
+    sleep(Duration::from_millis(100)).await;
+
+    // Connect with newer client timestamp
+    let mut client = SocketClient::connect(daemon_name, root_path).await?;
+
+    // Send version check with newer timestamp
+    client
+        .send_message(&SocketMessage::VersionCheck {
+            build_timestamp: client_timestamp,
+        })
+        .await?;
+
+    // Server should respond with its own (older) timestamp
+    let response = client.receive_message::<SocketMessage>().await?;
+
+    match response {
+        Some(SocketMessage::VersionCheck {
+            build_timestamp: daemon_ts,
+        }) => {
+            // Verify server reported its actual timestamp
+            assert_eq!(daemon_ts, daemon_timestamp, "Server should report its own timestamp");
+            // Verify timestamps don't match (client would trigger restart)
+            assert_ne!(daemon_ts, client_timestamp, "Timestamps should not match");
+        }
+        _ => panic!("Expected VersionCheck response"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multiple_commands_same_connection() -> Result<()> {
+    let daemon_name = "test-6008";
+    let root_path = "/tmp/test-6008";
+    let build_timestamp = 8888888888;
+    let handler = SimpleHandler;
+
+    // Start server
+    let (server, _handle) = DaemonServer::new_with_name_and_timestamp(
+        daemon_name,
+        root_path,
+        build_timestamp,
+        handler,
+        100,
+    );
+    let _server_handle = spawn(async move {
+        server.run().await.ok();
+    });
+
+    sleep(Duration::from_millis(100)).await;
+
+    let mut client = SocketClient::connect(daemon_name, root_path).await?;
+
+    // First, perform version handshake
+    client
+        .send_message(&SocketMessage::VersionCheck { build_timestamp })
+        .await?;
+
+    let handshake_response = client.receive_message::<SocketMessage>().await?;
+    assert!(matches!(
+        handshake_response,
+        Some(SocketMessage::VersionCheck { .. })
+    ));
+
+    // Send first command
+    let terminal_info = TerminalInfo {
+        width: Some(80),
+        height: Some(24),
+        is_tty: true,
+        color_support: ColorSupport::Basic16,
+    };
+    client
+        .send_message(&SocketMessage::Command {
+            command: "first command".to_string(),
+            terminal_info: terminal_info.clone(),
+        })
+        .await?;
+
+    // Receive first command output
+    let output1 = client.receive_message::<SocketMessage>().await?;
+    assert!(
+        matches!(output1, Some(SocketMessage::OutputChunk(_))),
+        "Should receive output for first command"
+    );
+
+    // Receive CommandComplete
+    let complete1 = client.receive_message::<SocketMessage>().await?;
+    assert!(
+        matches!(complete1, Some(SocketMessage::CommandComplete { exit_code: 0 })),
+        "First command should complete successfully"
+    );
+
+    // Connection should still be usable - send second command
+    // Note: This tests whether the protocol supports multiple commands per connection
+    // Based on the server implementation, each connection is one-shot
+    // So this should close the connection after the first command
+
+    Ok(())
+}

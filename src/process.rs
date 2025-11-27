@@ -4,6 +4,7 @@ use anyhow::{Result, bail};
 use tokio::time::{sleep, Duration};
 
 /// Result of process termination attempt.
+#[derive(Debug)]
 pub enum TerminateResult {
     /// Process was terminated successfully.
     Terminated,
@@ -197,5 +198,148 @@ mod tests {
         let result = process_exists(4_000_000_000);
         assert!(result.is_ok());
         assert!(!result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_terminate_nonexistent_process() {
+        // Terminating a nonexistent process should return AlreadyDead
+        let result = terminate_process(4_000_000_000, 100).await;
+        assert!(
+            matches!(result, TerminateResult::AlreadyDead),
+            "Expected AlreadyDead for nonexistent process"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_kill_nonexistent_process() {
+        // Kill on nonexistent process should not panic
+        kill_process(4_000_000_000).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_terminate_spawned_process() {
+        use tokio::process::Command;
+
+        // Spawn a simple sleep process
+        let mut child = Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("Failed to spawn sleep process");
+
+        let pid = child.id().expect("Process should have PID");
+
+        // Verify process exists
+        assert!(process_exists(pid).unwrap(), "Spawned process should exist");
+
+        // Terminate it with graceful timeout
+        let result = terminate_process(pid, 500).await;
+
+        // Note: When terminating a direct child process, it becomes a zombie until
+        // the parent (us) waits on it. The terminate_process function may report
+        // "Process survived SIGKILL" because zombies still appear in the process table.
+        // This is expected behavior - in production, daemon processes are detached
+        // and reaped by init/systemd, not our process.
+        //
+        // Accept either Terminated or the "zombie" error case
+        assert!(
+            matches!(result, TerminateResult::Terminated | TerminateResult::Error(_)),
+            "Process should be killed, got {:?}",
+            result
+        );
+
+        // Reap the zombie process by waiting on the child
+        let exit_status = child.wait().await;
+        assert!(exit_status.is_ok(), "Should be able to wait on terminated child");
+
+        // Verify process no longer exists (after reaping)
+        assert!(
+            !process_exists(pid).unwrap(),
+            "Process should not exist after reaping"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_sigterm_then_sigkill_escalation() {
+        use std::process::Stdio;
+        use tokio::process::Command;
+
+        // Spawn a process that traps SIGTERM and ignores it
+        // Using bash with a trap to ignore SIGTERM
+        let mut child = Command::new("bash")
+            .arg("-c")
+            .arg("trap '' TERM; sleep 60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to spawn bash process");
+
+        let pid = child.id().expect("Process should have PID");
+
+        // Give the trap time to be set up
+        sleep(Duration::from_millis(100)).await;
+
+        // Verify process exists
+        assert!(process_exists(pid).unwrap(), "Spawned process should exist");
+
+        // Terminate with very short graceful timeout (100ms)
+        // This should escalate to SIGKILL since SIGTERM is trapped
+        let result = terminate_process(pid, 100).await;
+
+        // Note: Same zombie issue as above - the process may appear to survive
+        // because it's a zombie until we reap it.
+        assert!(
+            matches!(result, TerminateResult::Terminated | TerminateResult::Error(_)),
+            "Process should be killed (possibly as zombie), got {:?}",
+            result
+        );
+
+        // Reap the zombie process by waiting on the child
+        let exit_status = child.wait().await;
+        assert!(exit_status.is_ok(), "Should be able to wait on terminated child");
+
+        // Verify process no longer exists (after reaping)
+        assert!(
+            !process_exists(pid).unwrap(),
+            "Process should not exist after reaping"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_terminate_spawned_process_windows() {
+        use std::process::Stdio;
+        use tokio::process::Command;
+
+        // Spawn a long-running process on Windows
+        let child = Command::new("timeout")
+            .args(["/t", "60", "/nobreak"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to spawn timeout process");
+
+        let pid = child.id().expect("Process should have PID");
+
+        // Verify process exists
+        assert!(process_exists(pid).unwrap(), "Spawned process should exist");
+
+        // Terminate it (Windows has no graceful shutdown, just immediate termination)
+        let result = terminate_process(pid, 500).await;
+
+        assert!(
+            matches!(result, TerminateResult::Terminated),
+            "Process should terminate successfully, got {:?}",
+            result
+        );
+
+        // Verify process no longer exists
+        assert!(
+            !process_exists(pid).unwrap(),
+            "Process should not exist after termination"
+        );
     }
 }
