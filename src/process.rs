@@ -121,7 +121,7 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use super::*;
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
         TerminateProcess as WinTerminateProcess, WaitForSingleObject,
@@ -130,7 +130,7 @@ mod platform {
     pub fn process_exists(pid: u32) -> Result<bool> {
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
 
-        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        if handle.is_null() {
             Ok(false)
         } else {
             unsafe { CloseHandle(handle) };
@@ -144,10 +144,10 @@ mod platform {
 
         let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
 
-        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        if handle.is_null() {
             // Check if process exists with limited permissions
             let check = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-            if check.is_null() || check == INVALID_HANDLE_VALUE {
+            if check.is_null() {
                 return TerminateResult::AlreadyDead;
             }
             unsafe { CloseHandle(check) };
