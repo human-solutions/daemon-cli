@@ -37,3 +37,4 @@ path = "examples/cli.rs"
 [dev-dependencies]
 tokio-test = "0.4"
 rand = "0.8"
+cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
