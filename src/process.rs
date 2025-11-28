@@ -144,7 +144,7 @@ mod platform {
                 Ok(false)
             } else {
                 // STILL_ACTIVE (259) means the process is still running
-                Ok(exit_code == STILL_ACTIVE)
+                Ok(exit_code == STILL_ACTIVE as u32)
             }
         }
     }
