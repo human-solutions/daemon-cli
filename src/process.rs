@@ -1,6 +1,9 @@
 //! Platform-specific process management utilities.
 
-use anyhow::{Result, bail};
+use anyhow::Result;
+#[cfg(unix)]
+use anyhow::bail;
+#[cfg(unix)]
 use tokio::time::{Duration, sleep};
 
 /// Result of process termination attempt.

@@ -10,9 +10,11 @@ use interprocess::local_socket::{
     tokio::{Listener, Stream, prelude::*},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+#[cfg(unix)]
+use std::fs;
 use std::{
     collections::hash_map::DefaultHasher,
-    env, fs,
+    env,
     hash::{Hash, Hasher},
     path::PathBuf,
 };
