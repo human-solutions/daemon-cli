@@ -83,9 +83,9 @@ impl CommandHandler for TaskQueueHandler {
             });
         });
 
-        let parts: Vec<&str> = command.trim().split_whitespace().collect();
+        let parts: Vec<&str> = command.split_whitespace().collect();
 
-        match parts.get(0) {
+        match parts.first() {
             Some(&"add-task") => {
                 let task_description = parts[1..].join(" ");
                 if task_description.is_empty() {

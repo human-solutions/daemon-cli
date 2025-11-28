@@ -1,14 +1,27 @@
 use crate::terminal::TerminalInfo;
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+#[cfg(unix)]
+use interprocess::local_socket::{GenericFilePath, ToFsName};
+#[cfg(windows)]
+use interprocess::local_socket::{GenericNamespaced, ToNsName};
+use interprocess::local_socket::{
+    ListenerOptions,
+    tokio::{Listener, Stream, prelude::*},
+};
+#[cfg(windows)]
+use interprocess::os::windows::{
+    local_socket::ListenerOptionsExt as _, security_descriptor::SecurityDescriptor,
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+#[cfg(unix)]
+use std::fs;
 use std::{
     collections::hash_map::DefaultHasher,
-    env, fs,
+    env,
     hash::{Hash, Hasher},
     path::PathBuf,
 };
-use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 // Base62 character set for encoding
@@ -58,39 +71,82 @@ pub fn deserialize_message<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     Ok(message)
 }
 
-// Internal: Unix socket server for handling RPC requests
+/// Cross-platform socket name for the daemon (used on Windows for named pipes).
+#[cfg_attr(unix, allow(dead_code))]
+pub fn socket_name(daemon_name: &str, root_path: &str) -> String {
+    let short_id = hash_path_to_short_id(root_path);
+    format!("{short_id}-{daemon_name}.sock")
+}
+
+/// Check if daemon socket likely exists (platform-aware).
+pub fn daemon_socket_exists(daemon_name: &str, root_path: &str) -> bool {
+    // On Unix, check socket file. On Windows, use PID file as proxy.
+    #[cfg(unix)]
+    {
+        socket_path(daemon_name, root_path).exists()
+    }
+    #[cfg(windows)]
+    {
+        // Windows named pipes can't be checked via filesystem
+        pid_path(daemon_name, root_path).exists()
+    }
+}
+
+// Internal: Cross-platform socket server for handling RPC requests
 pub struct SocketServer {
-    listener: UnixListener,
+    listener: Listener,
     socket_path: PathBuf,
 }
 
 impl SocketServer {
     pub async fn new(daemon_name: &str, root_path: &str) -> Result<Self> {
-        let socket_path = socket_path(daemon_name, root_path);
+        let sock_path = socket_path(daemon_name, root_path);
 
-        // Remove existing socket file if it exists
-        if socket_path.exists() {
-            fs::remove_file(&socket_path)?;
-        }
+        // Create listener using platform-appropriate naming
+        #[cfg(unix)]
+        let listener = {
+            // Remove existing socket file if it exists
+            if sock_path.exists() {
+                fs::remove_file(&sock_path)?;
+            }
+            ListenerOptions::new()
+                .name(sock_path.clone().to_fs_name::<GenericFilePath>()?)
+                .create_tokio()?
+        };
 
-        let listener = UnixListener::bind(&socket_path)?;
+        #[cfg(windows)]
+        let listener = {
+            use widestring::u16cstr;
 
-        // Set socket permissions to 0600 (owner read/write only)
+            let name = socket_name(daemon_name, root_path);
+
+            // Create security descriptor that grants full control to owner only (equivalent to Unix 0o600)
+            // SDDL: D:P(A;;GA;;;OW) = DACL Protected, Allow Generic All to Owner
+            let sd = SecurityDescriptor::deserialize(u16cstr!("D:P(A;;GA;;;OW)"))
+                .map_err(|e| anyhow::anyhow!("Failed to create security descriptor: {}", e))?;
+
+            ListenerOptions::new()
+                .name(name.to_ns_name::<GenericNamespaced>()?)
+                .security_descriptor(sd)
+                .create_tokio()?
+        };
+
+        // Set socket permissions to 0600 (owner read/write only) - Unix only
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let perms = fs::Permissions::from_mode(0o600);
-            fs::set_permissions(&socket_path, perms)?;
+            fs::set_permissions(&sock_path, perms)?;
         }
 
         Ok(Self {
             listener,
-            socket_path,
+            socket_path: sock_path,
         })
     }
 
     pub async fn accept(&mut self) -> Result<SocketConnection> {
-        let (stream, _addr) = self.listener.accept().await?;
+        let stream = self.listener.accept().await?;
         Ok(SocketConnection::new(stream))
     }
 
@@ -99,22 +155,26 @@ impl SocketServer {
     }
 }
 
-impl Drop for SocketServer {
-    fn drop(&mut self) {
-        // Clean up socket file
-        let _ = fs::remove_file(&self.socket_path);
-    }
-}
-
-// Internal: Unix socket client for sending RPC requests
+// Internal: Cross-platform socket client for sending RPC requests
 pub struct SocketClient {
     connection: SocketConnection,
 }
 
 impl SocketClient {
     pub async fn connect(daemon_name: &str, root_path: &str) -> Result<Self> {
-        let socket_path = socket_path(daemon_name, root_path);
-        let stream = UnixStream::connect(socket_path).await?;
+        // Connect using platform-appropriate naming
+        #[cfg(unix)]
+        let stream = {
+            let sock_path = socket_path(daemon_name, root_path);
+            Stream::connect(sock_path.to_fs_name::<GenericFilePath>()?).await?
+        };
+
+        #[cfg(windows)]
+        let stream = {
+            let name = socket_name(daemon_name, root_path);
+            Stream::connect(name.to_ns_name::<GenericNamespaced>()?).await?
+        };
+
         Ok(Self {
             connection: SocketConnection::new(stream),
         })
@@ -133,13 +193,13 @@ impl SocketClient {
     }
 }
 
-// Internal: Framed connection over Unix socket
+// Internal: Framed connection over cross-platform socket
 pub struct SocketConnection {
-    framed: Framed<UnixStream, LengthDelimitedCodec>,
+    framed: Framed<Stream, LengthDelimitedCodec>,
 }
 
 impl SocketConnection {
-    pub fn new(stream: UnixStream) -> Self {
+    pub fn new(stream: Stream) -> Self {
         let codec = LengthDelimitedCodec::new();
         let framed = Framed::new(stream, codec);
         Self { framed }
@@ -170,12 +230,16 @@ impl SocketConnection {
 // Internal: Message types for socket communication
 #[derive(Serialize, Deserialize, Debug)]
 pub enum SocketMessage {
-    VersionCheck { build_timestamp: u64 },
+    VersionCheck {
+        build_timestamp: u64,
+    },
     Command {
         command: String,
         terminal_info: TerminalInfo,
     },
     OutputChunk(Vec<u8>),
-    CommandComplete { exit_code: i32 },
+    CommandComplete {
+        exit_code: i32,
+    },
     CommandError(String),
 }

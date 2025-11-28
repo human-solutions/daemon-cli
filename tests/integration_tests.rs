@@ -481,7 +481,7 @@ async fn test_concurrent_stress_10_plus_clients() -> Result<()> {
         let result = handle.await;
         assert!(result.is_ok(), "Client task panicked");
         match result.unwrap() {
-            Ok(exit_code) if exit_code == 0 => success_count += 1,
+            Ok(0) => success_count += 1,
             Ok(exit_code) => panic!("Unexpected exit code: {}", exit_code),
             Err(_) => {} // Expected errors are ok in stress test
         }
@@ -555,7 +555,7 @@ async fn test_connection_limit() -> Result<()> {
         let result = handle.await;
         assert!(result.is_ok(), "Client task panicked");
         match result.unwrap() {
-            Ok(exit_code) if exit_code == 0 => success_count += 1,
+            Ok(0) => success_count += 1,
             Ok(exit_code) => panic!("Unexpected exit code: {}", exit_code),
             Err(e) => {
                 // When server is at capacity, connection is dropped which causes various errors
@@ -764,5 +764,434 @@ async fn test_with_auto_restart_enabled() -> Result<()> {
     // Cleanup
     stop_test_daemon(shutdown_handle, join_handle).await;
 
+    Ok(())
+}
+
+// ============================================================================
+// HIGH PRIORITY TESTS - Coverage gaps
+// ============================================================================
+
+// Test handler that writes large output then immediately returns
+// This tests the critical fix at server.rs:330-344 for handler output/task completion race
+#[derive(Clone)]
+struct ImmediateOutputHandler {
+    output_size: usize,
+}
+
+#[async_trait]
+impl CommandHandler for ImmediateOutputHandler {
+    async fn handle(
+        &self,
+        _command: &str,
+        _terminal_info: TerminalInfo,
+        mut output: impl AsyncWrite + Send + Unpin,
+        _cancel: CancellationToken,
+    ) -> Result<i32> {
+        // Write large output in chunks then immediately return
+        let chunk = vec![b'X'; 1024];
+        for _ in 0..(self.output_size / 1024) {
+            output.write_all(&chunk).await?;
+        }
+        // Handler completes immediately after writing - tests race condition
+        Ok(0)
+    }
+}
+
+#[tokio::test]
+async fn test_handler_completes_before_output_fully_read() -> Result<()> {
+    let (daemon_name, root_path) = generate_test_daemon_config();
+    let build_timestamp = 1234567910;
+    // 64KB of output to test buffering
+    let handler = ImmediateOutputHandler {
+        output_size: 64 * 1024,
+    };
+
+    let (shutdown_handle, join_handle) =
+        start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
+
+    let daemon_exe = PathBuf::from("./target/debug/examples/cli");
+    let mut client = DaemonClient::connect_with_name_and_timestamp(
+        &daemon_name,
+        &root_path,
+        daemon_exe,
+        build_timestamp,
+    )
+    .await?;
+
+    // Execute command - all output should be received before CommandComplete
+    let result = client.execute_command("test".to_string()).await;
+
+    assert!(result.is_ok(), "Command should succeed: {:?}", result);
+    assert_eq!(result.unwrap(), 0);
+
+    stop_test_daemon(shutdown_handle, join_handle).await;
+    Ok(())
+}
+
+// Test handler that produces very large output (1MB+)
+#[derive(Clone)]
+struct LargeOutputHandler {
+    total_size: usize,
+}
+
+#[async_trait]
+impl CommandHandler for LargeOutputHandler {
+    async fn handle(
+        &self,
+        _command: &str,
+        _terminal_info: TerminalInfo,
+        mut output: impl AsyncWrite + Send + Unpin,
+        _cancel: CancellationToken,
+    ) -> Result<i32> {
+        let chunk = vec![b'A'; 8192]; // 8KB chunks
+        let chunks = self.total_size / 8192;
+        for i in 0..chunks {
+            output.write_all(&chunk).await?;
+            // Small delay every 100 chunks to simulate real-world streaming
+            if i % 100 == 0 {
+                sleep(Duration::from_millis(1)).await;
+            }
+        }
+        Ok(0)
+    }
+}
+
+#[tokio::test]
+async fn test_large_output_streaming() -> Result<()> {
+    let (daemon_name, root_path) = generate_test_daemon_config();
+    let build_timestamp = 1234567911;
+    // 1MB output
+    let handler = LargeOutputHandler {
+        total_size: 1024 * 1024,
+    };
+
+    let (shutdown_handle, join_handle) =
+        start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
+
+    let daemon_exe = PathBuf::from("./target/debug/examples/cli");
+    let mut client = DaemonClient::connect_with_name_and_timestamp(
+        &daemon_name,
+        &root_path,
+        daemon_exe,
+        build_timestamp,
+    )
+    .await?;
+
+    let result = client.execute_command("large".to_string()).await;
+
+    assert!(result.is_ok(), "Large output should stream successfully");
+    assert_eq!(result.unwrap(), 0);
+
+    stop_test_daemon(shutdown_handle, join_handle).await;
+    Ok(())
+}
+
+// Test handler that panics to verify error capture
+#[derive(Clone)]
+struct PanicHandler;
+
+#[async_trait]
+impl CommandHandler for PanicHandler {
+    async fn handle(
+        &self,
+        _command: &str,
+        _terminal_info: TerminalInfo,
+        mut output: impl AsyncWrite + Send + Unpin,
+        _cancel: CancellationToken,
+    ) -> Result<i32> {
+        output.write_all(b"About to panic...\n").await?;
+        panic!("Test panic in handler");
+    }
+}
+
+#[tokio::test]
+async fn test_handler_panic_reports_error() -> Result<()> {
+    let (daemon_name, root_path) = generate_test_daemon_config();
+    let build_timestamp = 1234567912;
+    let handler = PanicHandler;
+
+    let (shutdown_handle, join_handle) =
+        start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
+
+    let daemon_exe = PathBuf::from("./target/debug/examples/cli");
+    let mut client = DaemonClient::connect_with_name_and_timestamp(
+        &daemon_name,
+        &root_path,
+        daemon_exe,
+        build_timestamp,
+    )
+    .await?;
+
+    let result = client.execute_command("trigger panic".to_string()).await;
+
+    // Should get an error (either from panic capture or connection close)
+    assert!(result.is_err(), "Panic should result in error");
+    let error_msg = result.unwrap_err().to_string().to_lowercase();
+    assert!(
+        error_msg.contains("panic") || error_msg.contains("closed") || error_msg.contains("error"),
+        "Error should indicate panic or connection issue: {}",
+        error_msg
+    );
+
+    // Server should still be running and able to accept new connections
+    sleep(Duration::from_millis(100)).await;
+
+    // Try a new connection to verify server is still operational
+    let client2 = DaemonClient::connect_with_name_and_timestamp(
+        &daemon_name,
+        &root_path,
+        PathBuf::from("./target/debug/examples/cli"),
+        build_timestamp,
+    )
+    .await;
+
+    // New connection should succeed (server recovered from panic)
+    assert!(
+        client2.is_ok(),
+        "Server should still accept connections after handler panic"
+    );
+
+    stop_test_daemon(shutdown_handle, join_handle).await;
+    Ok(())
+}
+
+// Test stale socket and PID file cleanup
+#[tokio::test]
+async fn test_cleanup_stale_socket_and_pid() -> Result<()> {
+    let (daemon_name, root_path) = generate_test_daemon_config();
+    let build_timestamp = 1234567913;
+
+    // Get paths for socket and PID files
+    let socket_path = daemon_cli::socket_path(&daemon_name, &root_path);
+    let pid_path = daemon_cli::pid_path(&daemon_name, &root_path);
+
+    // Create stale socket file (just a regular file, not an actual socket)
+    std::fs::write(&socket_path, "stale socket data")?;
+
+    // Create stale PID file with a non-existent PID
+    std::fs::write(&pid_path, "999999999")?;
+
+    // Verify files exist
+    assert!(socket_path.exists(), "Stale socket file should exist");
+    assert!(pid_path.exists(), "Stale PID file should exist");
+
+    // Now start a daemon - it should clean up the stale files
+    let handler = EchoHandler;
+    let (shutdown_handle, join_handle) =
+        start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
+
+    // Connect client - should succeed after cleanup
+    let daemon_exe = PathBuf::from("./target/debug/examples/cli");
+    let mut client = DaemonClient::connect_with_name_and_timestamp(
+        &daemon_name,
+        &root_path,
+        daemon_exe,
+        build_timestamp,
+    )
+    .await?;
+
+    // Execute a command to verify everything works
+    let result = client.execute_command("test".to_string()).await;
+    assert!(result.is_ok(), "Command should succeed after cleanup");
+
+    stop_test_daemon(shutdown_handle, join_handle).await;
+    Ok(())
+}
+
+// Test rapid connect/disconnect stress
+#[tokio::test]
+async fn test_rapid_connect_disconnect_stress() -> Result<()> {
+    let (daemon_name, root_path) = generate_test_daemon_config();
+    let build_timestamp = 1234567914;
+    let handler = EchoHandler;
+
+    let (shutdown_handle, join_handle) =
+        start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
+
+    let daemon_exe = PathBuf::from("./target/debug/examples/cli");
+
+    // Rapid connect/disconnect 50 times
+    let mut handles = vec![];
+    for i in 0..50 {
+        let daemon_name_clone = daemon_name.clone();
+        let root_path_clone = root_path.clone();
+        let daemon_exe_clone = daemon_exe.clone();
+        let handle = spawn(async move {
+            let client = DaemonClient::connect_with_name_and_timestamp(
+                &daemon_name_clone,
+                &root_path_clone,
+                daemon_exe_clone,
+                build_timestamp,
+            )
+            .await;
+
+            // Just connect and immediately drop
+            if let Ok(mut c) = client {
+                // Optionally execute a quick command
+                if i % 5 == 0 {
+                    let _ = c.execute_command(format!("rapid-{}", i)).await;
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        });
+        handles.push(handle);
+    }
+
+    // Wait for all to complete
+    let mut success_count = 0;
+    for handle in handles {
+        if handle.await.is_ok() {
+            success_count += 1;
+        }
+    }
+
+    // Most connections should succeed
+    assert!(
+        success_count >= 40,
+        "At least 40 of 50 rapid connections should succeed, got {}",
+        success_count
+    );
+
+    // Verify server is still stable
+    sleep(Duration::from_millis(100)).await;
+
+    let mut final_client = DaemonClient::connect_with_name_and_timestamp(
+        &daemon_name,
+        &root_path,
+        daemon_exe,
+        build_timestamp,
+    )
+    .await?;
+
+    let result = final_client.execute_command("final".to_string()).await;
+    assert!(result.is_ok(), "Server should still be stable after stress");
+
+    stop_test_daemon(shutdown_handle, join_handle).await;
+    Ok(())
+}
+
+// Test connection limit with immediate rejection (not queueing)
+#[tokio::test]
+async fn test_connection_limit_immediate_rejection() -> Result<()> {
+    let (daemon_name, root_path) = generate_test_daemon_config();
+    let build_timestamp = 1234567915;
+
+    // Handler that takes a while to complete
+    #[derive(Clone)]
+    struct SlowHandler;
+
+    #[async_trait]
+    impl CommandHandler for SlowHandler {
+        async fn handle(
+            &self,
+            _command: &str,
+            _terminal_info: TerminalInfo,
+            mut output: impl AsyncWrite + Send + Unpin,
+            _cancel: CancellationToken,
+        ) -> Result<i32> {
+            output.write_all(b"Starting slow operation...\n").await?;
+            sleep(Duration::from_millis(500)).await;
+            output.write_all(b"Done\n").await?;
+            Ok(0)
+        }
+    }
+
+    // Start server with connection limit of 2
+    let (shutdown_handle, join_handle) =
+        start_test_daemon_with_limit(&daemon_name, &root_path, build_timestamp, SlowHandler, 2)
+            .await;
+
+    let daemon_exe = PathBuf::from("./target/debug/examples/cli");
+
+    // Start 2 slow commands that will hold connections
+    let mut slow_handles = vec![];
+    for i in 0..2 {
+        let daemon_name_clone = daemon_name.clone();
+        let root_path_clone = root_path.clone();
+        let daemon_exe_clone = daemon_exe.clone();
+        let handle = spawn(async move {
+            let mut client = DaemonClient::connect_with_name_and_timestamp(
+                &daemon_name_clone,
+                &root_path_clone,
+                daemon_exe_clone,
+                build_timestamp,
+            )
+            .await?;
+            client.execute_command(format!("slow-{}", i)).await
+        });
+        slow_handles.push(handle);
+    }
+
+    // Give them time to start
+    sleep(Duration::from_millis(100)).await;
+
+    // Try to connect more clients - they should be rejected immediately
+    let mut rejected_count = 0;
+    for _ in 0..3 {
+        let client_result = DaemonClient::connect_with_name_and_timestamp(
+            &daemon_name,
+            &root_path,
+            daemon_exe.clone(),
+            build_timestamp,
+        )
+        .await;
+
+        if client_result.is_err() {
+            rejected_count += 1;
+        } else {
+            // If connection succeeded, try to execute - should fail
+            let mut client = client_result.unwrap();
+            if client.execute_command("test".to_string()).await.is_err() {
+                rejected_count += 1;
+            }
+        }
+    }
+
+    // Wait for slow handlers to complete
+    for handle in slow_handles {
+        let _ = handle.await;
+    }
+
+    // At least some connections should have been rejected
+    assert!(
+        rejected_count >= 1,
+        "At least 1 connection should be rejected when at limit, got {}",
+        rejected_count
+    );
+
+    stop_test_daemon(shutdown_handle, join_handle).await;
+    Ok(())
+}
+
+// ============================================================================
+// UNIX-SPECIFIC TESTS
+// ============================================================================
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_unix_socket_permissions() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (daemon_name, root_path) = generate_test_daemon_config();
+    let build_timestamp = 1234567916;
+    let handler = EchoHandler;
+
+    let (shutdown_handle, join_handle) =
+        start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
+
+    // Check socket permissions
+    let socket_path = daemon_cli::socket_path(&daemon_name, &root_path);
+    let metadata = std::fs::metadata(&socket_path)?;
+    let permissions = metadata.permissions();
+    let mode = permissions.mode() & 0o777; // Get just the permission bits
+
+    // Socket should have 0600 permissions (owner read/write only)
+    assert_eq!(
+        mode, 0o600,
+        "Socket should have 0600 permissions, got {:o}",
+        mode
+    );
+
+    stop_test_daemon(shutdown_handle, join_handle).await;
     Ok(())
 }

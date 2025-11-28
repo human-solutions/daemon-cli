@@ -155,3 +155,124 @@ impl Visit for MessageVisitor {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_context_buffer_new() {
+        let buffer = ErrorContextBuffer::new();
+        // Buffer should be empty initially
+        let entries = buffer.entries.lock();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_error_context_buffer_add_entry() {
+        let buffer = ErrorContextBuffer::new();
+
+        // Add an entry
+        buffer.add_entry(tracing::Level::INFO, "test message".to_string());
+
+        let entries = buffer.entries.lock();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message, "test message");
+    }
+
+    #[test]
+    fn test_error_context_buffer_multiple_entries() {
+        let buffer = ErrorContextBuffer::new();
+
+        // Add multiple entries
+        buffer.add_entry(tracing::Level::DEBUG, "debug message".to_string());
+        buffer.add_entry(tracing::Level::INFO, "info message".to_string());
+        buffer.add_entry(tracing::Level::WARN, "warn message".to_string());
+        buffer.add_entry(tracing::Level::ERROR, "error message".to_string());
+
+        let entries = buffer.entries.lock();
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0].message, "debug message");
+        assert_eq!(entries[1].message, "info message");
+        assert_eq!(entries[2].message, "warn message");
+        assert_eq!(entries[3].message, "error message");
+    }
+
+    #[test]
+    fn test_error_context_buffer_circular_eviction() {
+        let buffer = ErrorContextBuffer::new();
+
+        // Add more entries than BUFFER_SIZE
+        for i in 0..(BUFFER_SIZE + 10) {
+            buffer.add_entry(tracing::Level::INFO, format!("message {}", i));
+        }
+
+        let entries = buffer.entries.lock();
+
+        // Should have exactly BUFFER_SIZE entries
+        assert_eq!(entries.len(), BUFFER_SIZE);
+
+        // Oldest entries should have been evicted
+        // First entry should be message 10 (since we added 10 extra)
+        assert_eq!(entries[0].message, "message 10");
+
+        // Last entry should be the most recent
+        assert_eq!(
+            entries[BUFFER_SIZE - 1].message,
+            format!("message {}", BUFFER_SIZE + 10 - 1)
+        );
+    }
+
+    #[test]
+    fn test_error_context_buffer_clone() {
+        let buffer = ErrorContextBuffer::new();
+        buffer.add_entry(tracing::Level::INFO, "test".to_string());
+
+        // Clone should share the same underlying buffer
+        let buffer2 = buffer.clone();
+        buffer2.add_entry(tracing::Level::WARN, "test2".to_string());
+
+        // Both should see both entries
+        let entries = buffer.entries.lock();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn test_error_context_buffer_default() {
+        let buffer = ErrorContextBuffer::default();
+        let entries = buffer.entries.lock();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_error_context_buffer_dump_empty() {
+        let buffer = ErrorContextBuffer::new();
+        // This should not panic even with empty buffer
+        buffer.dump_to_stderr();
+    }
+
+    #[test]
+    fn test_error_context_buffer_dump_with_entries() {
+        let buffer = ErrorContextBuffer::new();
+        buffer.add_entry(tracing::Level::INFO, "test message".to_string());
+        buffer.add_entry(tracing::Level::ERROR, "error message".to_string());
+
+        // This should not panic
+        buffer.dump_to_stderr();
+    }
+
+    #[test]
+    fn test_log_entry_timestamps() {
+        let buffer = ErrorContextBuffer::new();
+
+        buffer.add_entry(tracing::Level::INFO, "first".to_string());
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        buffer.add_entry(tracing::Level::INFO, "second".to_string());
+
+        let entries = buffer.entries.lock();
+        assert_eq!(entries.len(), 2);
+
+        // Second entry should have a later timestamp
+        assert!(entries[1].timestamp >= entries[0].timestamp);
+    }
+}

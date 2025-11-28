@@ -72,7 +72,7 @@ fn test_socket_message_serialization() {
             assert_eq!(command, "test command");
             assert_eq!(ti.width, Some(80));
             assert_eq!(ti.height, Some(24));
-            assert_eq!(ti.is_tty, true);
+            assert!(ti.is_tty);
             assert_eq!(ti.color_support, ColorSupport::Truecolor);
         }
         _ => panic!("Wrong message type"),
@@ -124,7 +124,9 @@ async fn test_handler_basic_output() {
         color_support: ColorSupport::Basic16,
     };
 
-    let result = handler.handle("test", terminal_info, &mut output, cancel).await;
+    let result = handler
+        .handle("test", terminal_info, &mut output, cancel)
+        .await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 0); // Success exit code
     assert_eq!(String::from_utf8(output).unwrap(), "Hello, World!");
