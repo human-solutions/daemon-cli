@@ -81,8 +81,8 @@ mod platform {
             }
         }
 
-        // Wait for graceful shutdown (ceiling division ensures at least 1 iteration for any positive timeout)
-        let iterations = (graceful_timeout_ms + 99) / 100;
+        // Wait for graceful shutdown
+        let iterations = graceful_timeout_ms.div_ceil(100);
         for _ in 0..iterations {
             sleep(Duration::from_millis(100)).await;
             match kill(nix_pid, None) {
@@ -121,10 +121,10 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use super::*;
-    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
-        TerminateProcess as WinTerminateProcess, WaitForSingleObject,
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        PROCESS_TERMINATE, TerminateProcess as WinTerminateProcess, WaitForSingleObject,
     };
 
     pub fn process_exists(pid: u32) -> Result<bool> {
@@ -133,8 +133,19 @@ mod platform {
         if handle.is_null() {
             Ok(false)
         } else {
+            // Check if process is actually still running using GetExitCodeProcess.
+            // OpenProcess can succeed on terminated processes until cleanup is complete.
+            let mut exit_code: u32 = 0;
+            let result = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
             unsafe { CloseHandle(handle) };
-            Ok(true)
+
+            if result == 0 {
+                // GetExitCodeProcess failed, assume process doesn't exist
+                Ok(false)
+            } else {
+                // STILL_ACTIVE (259) means the process is still running
+                Ok(exit_code == STILL_ACTIVE)
+            }
         }
     }
 
