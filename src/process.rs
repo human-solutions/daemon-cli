@@ -1,7 +1,7 @@
 //! Platform-specific process management utilities.
 
 use anyhow::{Result, bail};
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 /// Result of process termination attempt.
 #[derive(Debug)]
@@ -118,17 +118,14 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use super::*;
-    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, TerminateProcess as WinTerminateProcess,
-        WaitForSingleObject, PROCESS_TERMINATE, PROCESS_SYNCHRONIZE,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        TerminateProcess as WinTerminateProcess, WaitForSingleObject,
     };
 
     pub fn process_exists(pid: u32) -> Result<bool> {
-        let handle = unsafe {
-            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
-        };
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
 
         if handle.is_null() || handle == INVALID_HANDLE_VALUE {
             Ok(false)
@@ -142,9 +139,7 @@ mod platform {
         // Windows has no SIGTERM equivalent for console applications.
         // TerminateProcess is immediate (like SIGKILL).
 
-        let handle = unsafe {
-            OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid)
-        };
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
 
         if handle.is_null() || handle == INVALID_HANDLE_VALUE {
             // Check if process exists with limited permissions
@@ -243,14 +238,20 @@ mod tests {
         //
         // Accept either Terminated or the "zombie" error case
         assert!(
-            matches!(result, TerminateResult::Terminated | TerminateResult::Error(_)),
+            matches!(
+                result,
+                TerminateResult::Terminated | TerminateResult::Error(_)
+            ),
             "Process should be killed, got {:?}",
             result
         );
 
         // Reap the zombie process by waiting on the child
         let exit_status = child.wait().await;
-        assert!(exit_status.is_ok(), "Should be able to wait on terminated child");
+        assert!(
+            exit_status.is_ok(),
+            "Should be able to wait on terminated child"
+        );
 
         // Verify process no longer exists (after reaping)
         assert!(
@@ -291,14 +292,20 @@ mod tests {
         // Note: Same zombie issue as above - the process may appear to survive
         // because it's a zombie until we reap it.
         assert!(
-            matches!(result, TerminateResult::Terminated | TerminateResult::Error(_)),
+            matches!(
+                result,
+                TerminateResult::Terminated | TerminateResult::Error(_)
+            ),
             "Process should be killed (possibly as zombie), got {:?}",
             result
         );
 
         // Reap the zombie process by waiting on the child
         let exit_status = child.wait().await;
-        assert!(exit_status.is_ok(), "Should be able to wait on terminated child");
+        assert!(
+            exit_status.is_ok(),
+            "Should be able to wait on terminated child"
+        );
 
         // Verify process no longer exists (after reaping)
         assert!(

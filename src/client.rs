@@ -496,26 +496,27 @@ impl DaemonClient {
         let result = self.execute_command_internal(command.clone()).await;
 
         // Check if we should auto-restart on error
-        if let Err(ref error) = result {
-            if self.auto_restart_on_error && Self::is_fatal_connection_error(error) {
-                tracing::warn!(
-                    error = %error,
-                    "Fatal connection error detected, restarting daemon and retrying"
-                );
+        if let Err(ref error) = result
+            && self.auto_restart_on_error
+            && Self::is_fatal_connection_error(error)
+        {
+            tracing::warn!(
+                error = %error,
+                "Fatal connection error detected, restarting daemon and retrying"
+            );
 
-                // Restart daemon
-                if let Err(restart_err) = self.restart().await {
-                    tracing::error!(error = %restart_err, "Failed to restart daemon");
-                    return Err(anyhow::anyhow!(
-                        "Daemon crashed and restart failed: {}",
-                        restart_err
-                    ));
-                }
-
-                // Retry command once
-                tracing::info!("Retrying command after daemon restart");
-                return self.execute_command_internal(command).await;
+            // Restart daemon
+            if let Err(restart_err) = self.restart().await {
+                tracing::error!(error = %restart_err, "Failed to restart daemon");
+                return Err(anyhow::anyhow!(
+                    "Daemon crashed and restart failed: {}",
+                    restart_err
+                ));
             }
+
+            // Retry command once
+            tracing::info!("Retrying command after daemon restart");
+            return self.execute_command_internal(command).await;
         }
 
         result
@@ -542,9 +543,8 @@ impl DaemonClient {
                 terminal_info,
             })
             .await
-            .map_err(|e| {
+            .inspect_err(|_| {
                 self.error_context.dump_to_stderr();
-                e
             })?;
 
         // Stream output chunks to stdout

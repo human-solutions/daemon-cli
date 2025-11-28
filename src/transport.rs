@@ -1,15 +1,15 @@
 use crate::terminal::TerminalInfo;
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
-use interprocess::local_socket::{
-    tokio::{prelude::*, Listener, Stream},
-    ListenerOptions,
-};
 #[cfg(unix)]
 use interprocess::local_socket::{GenericFilePath, ToFsName};
 #[cfg(windows)]
 use interprocess::local_socket::{GenericNamespaced, ToNsName};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use interprocess::local_socket::{
+    ListenerOptions,
+    tokio::{Listener, Stream, prelude::*},
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::hash_map::DefaultHasher,
     env, fs,
@@ -215,12 +215,16 @@ impl SocketConnection {
 // Internal: Message types for socket communication
 #[derive(Serialize, Deserialize, Debug)]
 pub enum SocketMessage {
-    VersionCheck { build_timestamp: u64 },
+    VersionCheck {
+        build_timestamp: u64,
+    },
     Command {
         command: String,
         terminal_info: TerminalInfo,
     },
     OutputChunk(Vec<u8>),
-    CommandComplete { exit_code: i32 },
+    CommandComplete {
+        exit_code: i32,
+    },
     CommandError(String),
 }

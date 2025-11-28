@@ -30,9 +30,9 @@ impl CommandHandler for CommandProcessor {
         mut output: impl AsyncWrite + Send + Unpin,
         cancel_token: CancellationToken,
     ) -> Result<i32> {
-        let parts: Vec<&str> = command.trim().split_whitespace().collect();
+        let parts: Vec<&str> = command.split_whitespace().collect();
 
-        match parts.get(0) {
+        match parts.first() {
             Some(&"status") => {
                 output.write_all(b"Daemon ready for processing\n").await?;
                 Ok(0)

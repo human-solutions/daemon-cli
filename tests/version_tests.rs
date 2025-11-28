@@ -386,7 +386,10 @@ async fn test_version_mismatch_triggers_client_action() -> Result<()> {
             build_timestamp: daemon_ts,
         }) => {
             // Verify server reported its actual timestamp
-            assert_eq!(daemon_ts, daemon_timestamp, "Server should report its own timestamp");
+            assert_eq!(
+                daemon_ts, daemon_timestamp,
+                "Server should report its own timestamp"
+            );
             // Verify timestamps don't match (client would trigger restart)
             assert_ne!(daemon_ts, client_timestamp, "Timestamps should not match");
         }
@@ -454,7 +457,10 @@ async fn test_multiple_commands_same_connection() -> Result<()> {
     // Receive CommandComplete
     let complete1 = client.receive_message::<SocketMessage>().await?;
     assert!(
-        matches!(complete1, Some(SocketMessage::CommandComplete { exit_code: 0 })),
+        matches!(
+            complete1,
+            Some(SocketMessage::CommandComplete { exit_code: 0 })
+        ),
         "First command should complete successfully"
     );
 

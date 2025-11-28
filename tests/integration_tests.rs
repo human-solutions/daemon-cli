@@ -481,7 +481,7 @@ async fn test_concurrent_stress_10_plus_clients() -> Result<()> {
         let result = handle.await;
         assert!(result.is_ok(), "Client task panicked");
         match result.unwrap() {
-            Ok(exit_code) if exit_code == 0 => success_count += 1,
+            Ok(0) => success_count += 1,
             Ok(exit_code) => panic!("Unexpected exit code: {}", exit_code),
             Err(_) => {} // Expected errors are ok in stress test
         }
@@ -555,7 +555,7 @@ async fn test_connection_limit() -> Result<()> {
         let result = handle.await;
         assert!(result.is_ok(), "Client task panicked");
         match result.unwrap() {
-            Ok(exit_code) if exit_code == 0 => success_count += 1,
+            Ok(0) => success_count += 1,
             Ok(exit_code) => panic!("Unexpected exit code: {}", exit_code),
             Err(e) => {
                 // When server is at capacity, connection is dropped which causes various errors
@@ -1097,14 +1097,9 @@ async fn test_connection_limit_immediate_rejection() -> Result<()> {
     }
 
     // Start server with connection limit of 2
-    let (shutdown_handle, join_handle) = start_test_daemon_with_limit(
-        &daemon_name,
-        &root_path,
-        build_timestamp,
-        SlowHandler,
-        2,
-    )
-    .await;
+    let (shutdown_handle, join_handle) =
+        start_test_daemon_with_limit(&daemon_name, &root_path, build_timestamp, SlowHandler, 2)
+            .await;
 
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
 
