@@ -28,6 +28,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
 ] }
+widestring = "1.0"
 
 [[example]]
 name = "cli"

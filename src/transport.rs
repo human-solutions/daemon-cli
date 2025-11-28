@@ -5,6 +5,11 @@ use futures::{SinkExt, StreamExt};
 use interprocess::local_socket::{GenericFilePath, ToFsName};
 #[cfg(windows)]
 use interprocess::local_socket::{GenericNamespaced, ToNsName};
+#[cfg(windows)]
+use interprocess::os::windows::{
+    local_socket::ListenerOptionsExt as _,
+    security_descriptor::SecurityDescriptor,
+};
 use interprocess::local_socket::{
     ListenerOptions,
     tokio::{Listener, Stream, prelude::*},
@@ -112,9 +117,18 @@ impl SocketServer {
 
         #[cfg(windows)]
         let listener = {
+            use widestring::u16cstr;
+
             let name = socket_name(daemon_name, root_path);
+
+            // Create security descriptor that grants full control to owner only (equivalent to Unix 0o600)
+            // SDDL: D:P(A;;GA;;;OW) = DACL Protected, Allow Generic All to Owner
+            let sd = SecurityDescriptor::deserialize(u16cstr!("D:P(A;;GA;;;OW)"))
+                .map_err(|e| anyhow::anyhow!("Failed to create security descriptor: {}", e))?;
+
             ListenerOptions::new()
                 .name(name.to_ns_name::<GenericNamespaced>()?)
+                .security_descriptor(sd)
                 .create_tokio()?
         };
 
