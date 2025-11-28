@@ -464,10 +464,22 @@ async fn test_multiple_commands_same_connection() -> Result<()> {
         "First command should complete successfully"
     );
 
-    // Connection should still be usable - send second command
-    // Note: This tests whether the protocol supports multiple commands per connection
-    // Based on the server implementation, each connection is one-shot
-    // So this should close the connection after the first command
+    // Attempt to send a second command on the same connection
+    // The server uses one-shot semantics: it closes after handling one command
+    client
+        .send_message(&SocketMessage::Command {
+            command: "second command".to_string(),
+            terminal_info: terminal_info.clone(),
+        })
+        .await?;
+
+    // The connection should be closed by the server, so we expect EOF (None)
+    let response = client.receive_message::<SocketMessage>().await?;
+    assert!(
+        response.is_none(),
+        "Connection should be closed after first command (one-shot semantics), got: {:?}",
+        response
+    );
 
     Ok(())
 }
