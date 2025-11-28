@@ -81,8 +81,8 @@ mod platform {
             }
         }
 
-        // Wait for graceful shutdown
-        let iterations = graceful_timeout_ms / 100;
+        // Wait for graceful shutdown (ceiling division ensures at least 1 iteration for any positive timeout)
+        let iterations = (graceful_timeout_ms + 99) / 100;
         for _ in 0..iterations {
             sleep(Duration::from_millis(100)).await;
             match kill(nix_pid, None) {
