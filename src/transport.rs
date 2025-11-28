@@ -5,14 +5,13 @@ use futures::{SinkExt, StreamExt};
 use interprocess::local_socket::{GenericFilePath, ToFsName};
 #[cfg(windows)]
 use interprocess::local_socket::{GenericNamespaced, ToNsName};
-#[cfg(windows)]
-use interprocess::os::windows::{
-    local_socket::ListenerOptionsExt as _,
-    security_descriptor::SecurityDescriptor,
-};
 use interprocess::local_socket::{
     ListenerOptions,
     tokio::{Listener, Stream, prelude::*},
+};
+#[cfg(windows)]
+use interprocess::os::windows::{
+    local_socket::ListenerOptionsExt as _, security_descriptor::SecurityDescriptor,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 #[cfg(unix)]
