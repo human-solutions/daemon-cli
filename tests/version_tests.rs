@@ -41,6 +41,7 @@ async fn test_version_handshake_success() -> Result<()> {
         root_path,
         build_timestamp,
         handler,
+        StartupReason::FirstStart,
         100,
     );
     let _server_handle = spawn(async move {
@@ -86,6 +87,7 @@ async fn test_version_mismatch_detection() -> Result<()> {
         root_path,
         daemon_build_timestamp,
         handler,
+        StartupReason::FirstStart,
         100,
     );
     let _server_handle = spawn(async move {
@@ -137,6 +139,7 @@ async fn test_multiple_version_handshakes() -> Result<()> {
         root_path,
         build_timestamp,
         handler,
+        StartupReason::FirstStart,
         100,
     );
     let _server_handle = spawn(async move {
@@ -187,6 +190,7 @@ async fn test_version_handshake_before_command() -> Result<()> {
         root_path,
         build_timestamp,
         handler,
+        StartupReason::FirstStart,
         100,
     );
     let _server_handle = spawn(async move {
@@ -245,6 +249,7 @@ async fn test_command_without_handshake_fails() -> Result<()> {
         root_path,
         build_timestamp,
         handler,
+        StartupReason::FirstStart,
         100,
     );
     let _server_handle = spawn(async move {
@@ -293,6 +298,7 @@ async fn test_concurrent_version_handshakes() -> Result<()> {
         root_path,
         build_timestamp,
         handler,
+        StartupReason::FirstStart,
         100,
     );
     let _server_handle = spawn(async move {
@@ -360,6 +366,7 @@ async fn test_version_mismatch_triggers_client_action() -> Result<()> {
         root_path,
         daemon_timestamp,
         handler,
+        StartupReason::FirstStart,
         100,
     );
     let _server_handle = spawn(async move {
@@ -412,6 +419,7 @@ async fn test_multiple_commands_same_connection() -> Result<()> {
         root_path,
         build_timestamp,
         handler,
+        StartupReason::FirstStart,
         100,
     );
     let _server_handle = spawn(async move {

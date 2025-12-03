@@ -1,3 +1,4 @@
+use crate::StartupReason;
 use crate::error_context::{ErrorContextBuffer, get_or_init_global_error_context};
 use crate::process::{TerminateResult, kill_process, process_exists, terminate_process};
 use crate::terminal::TerminalInfo;
@@ -92,34 +93,45 @@ impl DaemonClient {
         // Try to connect to existing daemon first
         let socket_path = socket_path(daemon_name, root_path);
 
-        let mut socket_client = if let Ok(existing_client) =
-            SocketClient::connect(daemon_name, root_path).await
-        {
-            // Daemon is already running and responsive - use it
-            tracing::debug!("Connected to existing daemon");
-            existing_client
-        } else {
-            // Daemon not running or not responsive - spawn our own
-            tracing::debug!("No existing daemon found, spawning new daemon");
+        let mut socket_client =
+            if let Ok(existing_client) = SocketClient::connect(daemon_name, root_path).await {
+                // Daemon is already running and responsive - use it
+                tracing::debug!("Connected to existing daemon");
+                existing_client
+            } else {
+                // Daemon not running or not responsive - spawn our own
+                tracing::debug!("No existing daemon found, spawning new daemon");
 
-            if daemon_socket_exists(daemon_name, root_path) {
-                // Clean up stale socket file
-                tracing::debug!("Cleaning up stale socket file");
-                let _ = fs::remove_file(&socket_path);
-            }
+                // Determine startup reason based on whether stale socket exists
+                let startup_reason = if daemon_socket_exists(daemon_name, root_path) {
+                    // Clean up stale socket file - daemon crashed or was killed
+                    tracing::debug!("Cleaning up stale socket file");
+                    let _ = fs::remove_file(&socket_path);
+                    StartupReason::Recovered
+                } else {
+                    // No socket exists - fresh start
+                    StartupReason::FirstStart
+                };
 
-            // Kill any zombie processes (best effort)
-            Self::cleanup_stale_processes(daemon_name, root_path).await;
+                // Kill any zombie processes (best effort)
+                Self::cleanup_stale_processes(daemon_name, root_path).await;
 
-            // Spawn new daemon
-            match Self::spawn_and_wait_for_ready(daemon_name, root_path, &daemon_executable).await {
-                Ok(client) => client,
-                Err(e) => {
-                    error_context.dump_to_stderr();
-                    return Err(e);
+                // Spawn new daemon
+                match Self::spawn_and_wait_for_ready(
+                    daemon_name,
+                    root_path,
+                    &daemon_executable,
+                    startup_reason,
+                )
+                .await
+                {
+                    Ok(client) => client,
+                    Err(e) => {
+                        error_context.dump_to_stderr();
+                        return Err(e);
+                    }
                 }
-            }
-        };
+            };
 
         // Perform version handshake
         socket_client
@@ -146,17 +158,21 @@ impl DaemonClient {
             let _ = fs::remove_file(&socket_path);
             Self::cleanup_stale_processes(daemon_name, root_path).await;
 
-            // Spawn new daemon with correct version
-            socket_client =
-                match Self::spawn_and_wait_for_ready(daemon_name, root_path, &daemon_executable)
-                    .await
-                {
-                    Ok(client) => client,
-                    Err(e) => {
-                        error_context.dump_to_stderr();
-                        return Err(e);
-                    }
-                };
+            // Spawn new daemon with correct version - reason is BinaryUpdated
+            socket_client = match Self::spawn_and_wait_for_ready(
+                daemon_name,
+                root_path,
+                &daemon_executable,
+                StartupReason::BinaryUpdated,
+            )
+            .await
+            {
+                Ok(client) => client,
+                Err(e) => {
+                    error_context.dump_to_stderr();
+                    return Err(e);
+                }
+            };
 
             // Retry handshake
             socket_client
@@ -195,12 +211,15 @@ impl DaemonClient {
         daemon_name: &str,
         root_path: &str,
         daemon_executable: &PathBuf,
+        startup_reason: StartupReason,
     ) -> Result<SocketClient> {
-        tracing::debug!(daemon_exe = ?daemon_executable, "Spawning daemon");
+        tracing::debug!(daemon_exe = ?daemon_executable, startup_reason = %startup_reason, "Spawning daemon");
 
         // Retry daemon spawning to handle race conditions with concurrent test cleanup
         for retry_attempt in 0..3 {
-            let result = Self::try_spawn_daemon(daemon_name, root_path, daemon_executable).await;
+            let result =
+                Self::try_spawn_daemon(daemon_name, root_path, daemon_executable, startup_reason)
+                    .await;
 
             match result {
                 Ok(client) => {
@@ -231,6 +250,7 @@ impl DaemonClient {
         daemon_name: &str,
         root_path: &str,
         daemon_executable: &PathBuf,
+        startup_reason: StartupReason,
     ) -> Result<SocketClient> {
         // Spawn daemon process (detached - it will manage its own lifecycle)
         // The daemon will auto-detect its binary mtime for version checking
@@ -241,6 +261,8 @@ impl DaemonClient {
             .arg(daemon_name)
             .arg("--root-path")
             .arg(root_path)
+            .arg("--startup-reason")
+            .arg(startup_reason.as_str())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -420,12 +442,13 @@ impl DaemonClient {
         // Force stop existing daemon (ignore errors if already dead)
         let _ = self.force_stop().await;
 
-        // Reconnect to fresh daemon
-        let new_client = Self::connect_with_name_and_timestamp(
+        // Reconnect to fresh daemon with ForceRestarted reason
+        let new_client = Self::spawn_fresh_daemon(
             &self.daemon_name,
             &self.root_path,
             self.daemon_executable.clone(),
             self.build_timestamp,
+            StartupReason::ForceRestarted,
         )
         .await?;
 
@@ -435,6 +458,65 @@ impl DaemonClient {
         self.auto_restart_on_error = auto_restart;
 
         Ok(())
+    }
+
+    /// Spawn a fresh daemon with an explicit startup reason (used by restart).
+    async fn spawn_fresh_daemon(
+        daemon_name: &str,
+        root_path: &str,
+        daemon_executable: PathBuf,
+        build_timestamp: u64,
+        startup_reason: StartupReason,
+    ) -> Result<Self> {
+        let error_context = get_or_init_global_error_context();
+        let socket_path = socket_path(daemon_name, root_path);
+
+        // Clean up any stale files
+        let _ = fs::remove_file(&socket_path);
+        Self::cleanup_stale_processes(daemon_name, root_path).await;
+
+        // Spawn new daemon with specified startup reason
+        let mut socket_client = match Self::spawn_and_wait_for_ready(
+            daemon_name,
+            root_path,
+            &daemon_executable,
+            startup_reason,
+        )
+        .await
+        {
+            Ok(client) => client,
+            Err(e) => {
+                error_context.dump_to_stderr();
+                return Err(e);
+            }
+        };
+
+        // Perform version handshake
+        socket_client
+            .send_message(&SocketMessage::VersionCheck { build_timestamp })
+            .await?;
+
+        match socket_client.receive_message().await? {
+            Some(SocketMessage::VersionCheck {
+                build_timestamp: daemon_ts,
+            }) if daemon_ts == build_timestamp => {
+                tracing::debug!("Version handshake successful");
+            }
+            _ => {
+                error_context.dump_to_stderr();
+                bail!("Version handshake failed");
+            }
+        }
+
+        Ok(Self {
+            socket_client,
+            daemon_name: daemon_name.to_string(),
+            root_path: root_path.to_string(),
+            daemon_executable,
+            build_timestamp,
+            error_context,
+            auto_restart_on_error: false,
+        })
     }
 
     /// Enable or disable automatic daemon restart on fatal connection errors.

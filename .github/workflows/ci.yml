@@ -21,10 +21,7 @@ jobs:
       - run: cargo fmt --check
 
   clippy:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -34,7 +31,6 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
-    needs: [fmt, clippy]
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]

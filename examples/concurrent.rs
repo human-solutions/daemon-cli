@@ -251,7 +251,36 @@ fn print_usage() {
 }
 
 async fn run_daemon_mode() -> Result<()> {
-    let root_path = env::current_dir()?.to_string_lossy().to_string();
+    // Parse daemon arguments: daemon --daemon-name X --root-path Y --startup-reason Z
+    let args: Vec<String> = env::args().collect();
+    let mut root_path = env::current_dir()?.to_string_lossy().to_string();
+    let mut startup_reason = StartupReason::default();
+
+    // Simple argument parsing
+    let mut i = 2; // Skip program name and "daemon"
+    while i < args.len() {
+        match args[i].as_str() {
+            "--daemon-name" => {
+                // Skip daemon name - DaemonServer auto-detects it
+                i += 2;
+            }
+            "--root-path" => {
+                if i + 1 < args.len() {
+                    root_path = args[i + 1].clone();
+                }
+                i += 2;
+            }
+            "--startup-reason" => {
+                if i + 1 < args.len() {
+                    startup_reason = args[i + 1].parse().unwrap_or_default();
+                }
+                i += 2;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
 
     // Initialize tracing subscriber for daemon logs
     // Logs go to stderr with compact format
@@ -266,12 +295,13 @@ async fn run_daemon_mode() -> Result<()> {
 
     tracing::info!(
         root_path,
+        startup_reason = %startup_reason,
         "Starting task queue daemon with concurrent request handling"
     );
 
     let handler = TaskQueueHandler::new();
     // Automatically detects daemon name and binary mtime
-    let (server, _handle) = DaemonServer::new(&root_path, handler);
+    let (server, _handle) = DaemonServer::new(&root_path, handler, startup_reason);
     server.run().await?;
 
     Ok(())
