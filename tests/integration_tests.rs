@@ -30,6 +30,7 @@ async fn start_test_daemon<H: CommandHandler + Clone + 'static>(
         root_path,
         build_timestamp,
         handler,
+        StartupReason::FirstStart,
         100,
     );
     let join_handle = spawn(async move {
@@ -55,6 +56,7 @@ async fn start_test_daemon_with_limit<H: CommandHandler + Clone + 'static>(
         root_path,
         build_timestamp,
         handler,
+        StartupReason::FirstStart,
         max_connections,
     );
     let join_handle = spawn(async move {

@@ -59,7 +59,7 @@ static CLIENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 ///
 /// // Demonstrate server creation - automatically detects daemon name and binary mtime
 /// let daemon = MyDaemon;
-/// let (server, _handle) = DaemonServer::new("/path/to/project", daemon);
+/// let (server, _handle) = DaemonServer::new("/path/to/project", daemon, StartupReason::FirstStart);
 /// // Use handle.shutdown() to stop the server, or drop it to run indefinitely
 /// ```
 pub struct DaemonServer<H> {
@@ -69,6 +69,8 @@ pub struct DaemonServer<H> {
     pub root_path: String,
     /// Binary modification time (mtime) for version compatibility checking
     pub build_timestamp: u64,
+    /// Reason why this daemon instance was started
+    pub startup_reason: StartupReason,
     handler: H,
     shutdown_rx: oneshot::Receiver<()>,
     connection_semaphore: Arc<Semaphore>,
@@ -106,16 +108,24 @@ where
     ///
     /// * `root_path` - Project root directory path used as unique identifier/scope for this daemon instance
     /// * `handler` - Your command handler implementation
+    /// * `startup_reason` - Why the daemon is starting (passed from client via `--startup-reason` CLI arg)
     ///
     /// # Returns
     ///
     /// A tuple of (DaemonServer, DaemonHandle). Call `shutdown()` on the handle
     /// to gracefully stop the server, or drop it to let the server run indefinitely.
     ///
-    pub fn new(root_path: &str, handler: H) -> (Self, DaemonHandle) {
+    pub fn new(root_path: &str, handler: H, startup_reason: StartupReason) -> (Self, DaemonHandle) {
         let daemon_name = crate::auto_detect_daemon_name();
         let build_timestamp = crate::get_build_timestamp();
-        Self::new_with_name_and_timestamp(&daemon_name, root_path, build_timestamp, handler, 100)
+        Self::new_with_name_and_timestamp(
+            &daemon_name,
+            root_path,
+            build_timestamp,
+            handler,
+            startup_reason,
+            100,
+        )
     }
 
     /// Create a new daemon server instance with explicit name, timestamp, and connection limit (primarily for testing).
@@ -130,6 +140,7 @@ where
     /// * `root_path` - Project root directory path used as unique identifier/scope for this daemon instance
     /// * `build_timestamp` - Binary mtime (seconds since Unix epoch) for version checking
     /// * `handler` - Your command handler implementation
+    /// * `startup_reason` - Why the daemon is starting (passed from client via `--startup-reason` CLI arg)
     /// * `max_connections` - Maximum number of concurrent client connections
     ///
     /// # Returns
@@ -142,6 +153,7 @@ where
         root_path: &str,
         build_timestamp: u64,
         handler: H,
+        startup_reason: StartupReason,
         max_connections: usize,
     ) -> (Self, DaemonHandle) {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -153,6 +165,7 @@ where
             daemon_name: daemon_name.to_string(),
             root_path: root_path.to_string(),
             build_timestamp,
+            startup_reason,
             handler,
             shutdown_rx,
             connection_semaphore,
@@ -210,6 +223,9 @@ where
             build_timestamp = self.build_timestamp,
             "Daemon started and listening"
         );
+
+        // Notify handler of startup reason
+        self.handler.on_startup(self.startup_reason);
 
         loop {
             // Select between accepting connection and shutdown signal

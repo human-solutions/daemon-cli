@@ -75,7 +75,8 @@
 //! async fn main() -> Result<()> {
 //!     let handler = MyHandler;
 //!     // Automatically detects daemon name and binary mtime
-//!     let (server, _handle) = DaemonServer::new("/path/to/project", handler);
+//!     // startup_reason is passed from client via --startup-reason CLI arg
+//!     let (server, _handle) = DaemonServer::new("/path/to/project", handler, StartupReason::default());
 //!     server.run().await?;
 //!     Ok(())
 //! }
@@ -99,7 +100,7 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use std::{env, fs, time::UNIX_EPOCH};
+use std::{env, fs, str::FromStr, time::UNIX_EPOCH};
 use tokio::io::AsyncWrite;
 use tokio_util::sync::CancellationToken;
 
@@ -115,6 +116,56 @@ pub use error_context::ErrorContextBuffer;
 pub use server::{DaemonHandle, DaemonServer};
 pub use terminal::{ColorSupport, TerminalInfo};
 
+/// Reason why daemon was started.
+///
+/// This is passed to [`CommandHandler::on_startup`] to indicate
+/// the circumstances under which the daemon started. The client
+/// determines the reason and passes it via `--startup-reason` CLI arg.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StartupReason {
+    /// Fresh start - daemon starting for first time in this location
+    #[default]
+    FirstStart,
+    /// Binary was updated (mtime changed), old daemon was replaced
+    BinaryUpdated,
+    /// Previous daemon crashed or was killed unexpectedly
+    Recovered,
+    /// User explicitly called `restart()` on the client
+    ForceRestarted,
+}
+
+impl StartupReason {
+    /// Convert to CLI argument string value.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::FirstStart => "first-start",
+            Self::BinaryUpdated => "binary-updated",
+            Self::Recovered => "recovered",
+            Self::ForceRestarted => "force-restarted",
+        }
+    }
+}
+
+impl FromStr for StartupReason {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "first-start" => Ok(Self::FirstStart),
+            "binary-updated" => Ok(Self::BinaryUpdated),
+            "recovered" => Ok(Self::Recovered),
+            "force-restarted" => Ok(Self::ForceRestarted),
+            _ => Err(()),
+        }
+    }
+}
+
+impl std::fmt::Display for StartupReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -124,7 +175,7 @@ mod tests;
 pub mod prelude {
     pub use crate::{
         ColorSupport, CommandHandler, DaemonClient, DaemonHandle, DaemonServer, ErrorContextBuffer,
-        TerminalInfo,
+        StartupReason, TerminalInfo,
     };
     pub use anyhow::Result;
     pub use async_trait::async_trait;
@@ -276,4 +327,13 @@ pub trait CommandHandler: Send + Sync {
         output: impl AsyncWrite + Send + Unpin,
         cancel_token: CancellationToken,
     ) -> Result<i32>;
+
+    /// Called once when the daemon starts, before accepting connections.
+    ///
+    /// Override this method to log the startup reason or perform
+    /// initialization that depends on whether this is a fresh start
+    /// or a restart.
+    ///
+    /// The default implementation does nothing.
+    fn on_startup(&self, _reason: StartupReason) {}
 }
