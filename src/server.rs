@@ -47,7 +47,7 @@ static CLIENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 ///     async fn handle(
 ///         &self,
 ///         command: &str,
-///         _terminal_info: TerminalInfo,
+///         _ctx: CommandContext,
 ///         mut output: impl AsyncWrite + Send + Unpin,
 ///         _cancel_token: CancellationToken,
 ///     ) -> Result<i32> {
@@ -303,8 +303,8 @@ where
                         }
 
                         // Receive command
-                        let (command, terminal_info) = match connection.receive_message::<SocketMessage>().await {
-                            Ok(Some(SocketMessage::Command { command, terminal_info })) => (command, terminal_info),
+                        let (command, context) = match connection.receive_message::<SocketMessage>().await {
+                            Ok(Some(SocketMessage::Command { command, context })) => (command, context),
                             _ => {
                                 tracing::warn!("No command received from client");
                                 return;
@@ -312,11 +312,12 @@ where
                         };
 
                         tracing::debug!(
-                            terminal_width = ?terminal_info.width,
-                            terminal_height = ?terminal_info.height,
-                            is_tty = terminal_info.is_tty,
-                            color_support = ?terminal_info.color_support,
-                            "Received command with terminal info"
+                            terminal_width = ?context.terminal_info.width,
+                            terminal_height = ?context.terminal_info.height,
+                            is_tty = context.terminal_info.is_tty,
+                            color_support = ?context.terminal_info.color_support,
+                            env_var_count = context.env_vars.len(),
+                            "Received command with context"
                         );
 
                         // Create a pipe for streaming output
@@ -329,7 +330,7 @@ where
                         // Spawn handler task (will not inherit span by default)
                         let mut handler_task = Some(spawn(async move {
                             handler
-                                .handle(&command, terminal_info, output_writer, cancel_token_clone)
+                                .handle(&command, context, output_writer, cancel_token_clone)
                                 .await
                         }));
 
