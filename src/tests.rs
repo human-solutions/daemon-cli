@@ -58,6 +58,7 @@ fn test_socket_message_serialization() {
         height: Some(24),
         is_tty: true,
         color_support: ColorSupport::Truecolor,
+        theme: None,
     };
     let mut env_vars = HashMap::new();
     env_vars.insert("TEST_VAR".to_string(), "test_value".to_string());
@@ -127,6 +128,7 @@ async fn test_handler_basic_output() {
         height: Some(24),
         is_tty: true,
         color_support: ColorSupport::Basic16,
+        theme: None,
     };
     let ctx = CommandContext::new(terminal_info);
 
@@ -171,6 +173,7 @@ async fn test_handler_with_cancellation() {
         height: None,
         is_tty: false,
         color_support: ColorSupport::None,
+        theme: None,
     };
     let ctx = CommandContext::new(terminal_info);
 

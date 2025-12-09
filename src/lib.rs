@@ -115,7 +115,7 @@ mod transport;
 pub use client::DaemonClient;
 pub use error_context::ErrorContextBuffer;
 pub use server::{DaemonHandle, DaemonServer};
-pub use terminal::{ColorSupport, TerminalInfo};
+pub use terminal::{ColorSupport, TerminalInfo, Theme};
 
 /// Configuration for filtering which environment variables to pass from client to daemon.
 ///
@@ -267,7 +267,7 @@ mod tests;
 pub mod prelude {
     pub use crate::{
         ColorSupport, CommandContext, CommandHandler, DaemonClient, DaemonHandle, DaemonServer,
-        EnvVarFilter, ErrorContextBuffer, StartupReason, TerminalInfo,
+        EnvVarFilter, ErrorContextBuffer, StartupReason, TerminalInfo, Theme,
     };
     pub use anyhow::Result;
     pub use async_trait::async_trait;
