@@ -159,18 +159,33 @@ impl EnvVarFilter {
         self
     }
 
+    /// Filter environment variables from the provided source.
+    ///
+    /// This is useful for testing or when you want to filter from
+    /// a custom set of variables rather than the current process env.
+    pub fn filter_from<K, V>(
+        &self,
+        env: impl IntoIterator<Item = (K, V)>,
+    ) -> HashMap<String, String>
+    where
+        K: AsRef<str>,
+        V: Into<String>,
+    {
+        if self.names.is_empty() {
+            return HashMap::new();
+        }
+        env.into_iter()
+            .filter(|(k, _)| self.names.iter().any(|n| n == k.as_ref()))
+            .map(|(k, v)| (k.as_ref().to_string(), v.into()))
+            .collect()
+    }
+
     /// Filter environment variables from the current process.
     ///
     /// Returns a HashMap containing only the env vars whose names match
     /// those configured in this filter.
     pub fn filter_current_env(&self) -> HashMap<String, String> {
-        if self.names.is_empty() {
-            return HashMap::new();
-        }
-        self.names
-            .iter()
-            .filter_map(|name| std::env::var(name).ok().map(|value| (name.clone(), value)))
-            .collect()
+        self.filter_from(std::env::vars())
     }
 }
 

@@ -193,50 +193,21 @@ fn test_env_var_filter_none() {
 
 #[test]
 fn test_env_var_filter_with_names() {
-    // Set test env var
-    // SAFETY: Test runs single-threaded and we clean up immediately after
-    unsafe { std::env::set_var("TEST_DAEMON_CLI_VAR", "test_value") };
-
-    let filter = EnvVarFilter::with_names(["TEST_DAEMON_CLI_VAR"]);
-    let filtered = filter.filter_current_env();
-    assert_eq!(
-        filtered.get("TEST_DAEMON_CLI_VAR"),
-        Some(&"test_value".to_string())
-    );
-
-    // Clean up
-    unsafe { std::env::remove_var("TEST_DAEMON_CLI_VAR") };
+    let mock_env = [("TEST_VAR", "test_value"), ("OTHER_VAR", "other")];
+    let filter = EnvVarFilter::with_names(["TEST_VAR"]);
+    let filtered = filter.filter_from(mock_env);
+    assert_eq!(filtered.get("TEST_VAR"), Some(&"test_value".to_string()));
+    assert_eq!(filtered.len(), 1);
 }
 
 #[test]
 fn test_env_var_filter_include() {
-    // Set test env vars
-    // SAFETY: Test runs single-threaded and we clean up immediately after
-    unsafe {
-        std::env::set_var("TEST_DAEMON_CLI_VAR1", "value1");
-        std::env::set_var("TEST_DAEMON_CLI_VAR2", "value2");
-    }
-
-    let filter = EnvVarFilter::none()
-        .include("TEST_DAEMON_CLI_VAR1")
-        .include("TEST_DAEMON_CLI_VAR2");
-
-    let filtered = filter.filter_current_env();
+    let mock_env = [("VAR1", "value1"), ("VAR2", "value2"), ("VAR3", "value3")];
+    let filter = EnvVarFilter::none().include("VAR1").include("VAR2");
+    let filtered = filter.filter_from(mock_env);
     assert_eq!(filtered.len(), 2);
-    assert_eq!(
-        filtered.get("TEST_DAEMON_CLI_VAR1"),
-        Some(&"value1".to_string())
-    );
-    assert_eq!(
-        filtered.get("TEST_DAEMON_CLI_VAR2"),
-        Some(&"value2".to_string())
-    );
-
-    // Clean up
-    unsafe {
-        std::env::remove_var("TEST_DAEMON_CLI_VAR1");
-        std::env::remove_var("TEST_DAEMON_CLI_VAR2");
-    }
+    assert_eq!(filtered.get("VAR1"), Some(&"value1".to_string()));
+    assert_eq!(filtered.get("VAR2"), Some(&"value2".to_string()));
 }
 
 #[test]
