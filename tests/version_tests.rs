@@ -19,7 +19,7 @@ impl CommandHandler for SimpleHandler {
     async fn handle(
         &self,
         command: &str,
-        _terminal_info: TerminalInfo,
+        _ctx: CommandContext,
         mut output: impl AsyncWrite + Send + Unpin,
         _cancel: CancellationToken,
     ) -> Result<i32> {
@@ -218,11 +218,12 @@ async fn test_version_handshake_before_command() -> Result<()> {
         height: Some(24),
         is_tty: true,
         color_support: ColorSupport::Basic16,
+        theme: None,
     };
     client
         .send_message(&SocketMessage::Command {
             command: "test command".to_string(),
-            terminal_info,
+            context: CommandContext::new(terminal_info),
         })
         .await?;
 
@@ -267,11 +268,12 @@ async fn test_command_without_handshake_fails() -> Result<()> {
         height: None,
         is_tty: false,
         color_support: ColorSupport::None,
+        theme: None,
     };
     client
         .send_message(&SocketMessage::Command {
             command: "test".to_string(),
-            terminal_info,
+            context: CommandContext::new(terminal_info),
         })
         .await?;
 
@@ -447,11 +449,12 @@ async fn test_multiple_commands_same_connection() -> Result<()> {
         height: Some(24),
         is_tty: true,
         color_support: ColorSupport::Basic16,
+        theme: None,
     };
     client
         .send_message(&SocketMessage::Command {
             command: "first command".to_string(),
-            terminal_info: terminal_info.clone(),
+            context: CommandContext::new(terminal_info.clone()),
         })
         .await?;
 
@@ -477,7 +480,7 @@ async fn test_multiple_commands_same_connection() -> Result<()> {
     client
         .send_message(&SocketMessage::Command {
             command: "second command".to_string(),
-            terminal_info: terminal_info.clone(),
+            context: CommandContext::new(terminal_info.clone()),
         })
         .await?;
 

@@ -1,4 +1,4 @@
-use crate::terminal::TerminalInfo;
+use crate::CommandContext;
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
 #[cfg(unix)]
@@ -235,7 +235,7 @@ pub enum SocketMessage {
     },
     Command {
         command: String,
-        terminal_info: TerminalInfo,
+        context: CommandContext,
     },
     OutputChunk(Vec<u8>),
     CommandComplete {

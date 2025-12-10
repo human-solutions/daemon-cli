@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2025-12-09
+
+### Changed (BREAKING)
+
+- `CommandHandler::handle()` now takes `ctx: CommandContext` instead of `terminal_info: TerminalInfo`
+- Access terminal info via `ctx.terminal_info`
+
+### Added
+
+- **Environment variable passing**: Pass env vars from client to daemon per-command
+  - New `EnvVarFilter` for exact-match filtering of env var names
+  - New `CommandContext` struct bundling terminal info + env vars
+  - `DaemonClient::with_env_filter()` builder method
+- **Terminal theme detection**: Detect dark/light mode via `terminal-colorsaurus`
+  - New `Theme` enum (`Dark`, `Light`)
+  - New `TerminalInfo.theme: Option<Theme>` field
+  - Uses 50ms timeout, returns `None` if detection fails
+
 ## [0.7.0] - 2025-12-03
 
 ### Changed (BREAKING)

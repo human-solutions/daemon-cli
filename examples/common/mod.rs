@@ -26,7 +26,7 @@ impl CommandHandler for CommandProcessor {
     async fn handle(
         &self,
         command: &str,
-        _terminal_info: TerminalInfo,
+        _ctx: CommandContext,
         mut output: impl AsyncWrite + Send + Unpin,
         cancel_token: CancellationToken,
     ) -> Result<i32> {

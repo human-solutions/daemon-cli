@@ -1,5 +1,6 @@
 use crate::transport::SocketMessage;
 use crate::*;
+use std::collections::HashMap;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 // Test handler for unit tests
@@ -19,7 +20,7 @@ impl CommandHandler for TestHandler {
     async fn handle(
         &self,
         _command: &str,
-        _terminal_info: TerminalInfo,
+        _ctx: CommandContext,
         mut output: impl AsyncWrite + Send + Unpin,
         _cancel: CancellationToken,
     ) -> Result<i32> {
@@ -57,23 +58,28 @@ fn test_socket_message_serialization() {
         height: Some(24),
         is_tty: true,
         color_support: ColorSupport::Truecolor,
+        theme: None,
     };
+    let mut env_vars = HashMap::new();
+    env_vars.insert("TEST_VAR".to_string(), "test_value".to_string());
+    let context = CommandContext::with_env(terminal_info.clone(), env_vars);
     let command_msg = SocketMessage::Command {
         command: "test command".to_string(),
-        terminal_info: terminal_info.clone(),
+        context,
     };
     let serialized = serde_json::to_string(&command_msg).unwrap();
     let deserialized: SocketMessage = serde_json::from_str(&serialized).unwrap();
     match deserialized {
-        SocketMessage::Command {
-            command,
-            terminal_info: ti,
-        } => {
+        SocketMessage::Command { command, context } => {
             assert_eq!(command, "test command");
-            assert_eq!(ti.width, Some(80));
-            assert_eq!(ti.height, Some(24));
-            assert!(ti.is_tty);
-            assert_eq!(ti.color_support, ColorSupport::Truecolor);
+            assert_eq!(context.terminal_info.width, Some(80));
+            assert_eq!(context.terminal_info.height, Some(24));
+            assert!(context.terminal_info.is_tty);
+            assert_eq!(context.terminal_info.color_support, ColorSupport::Truecolor);
+            assert_eq!(
+                context.env_vars.get("TEST_VAR"),
+                Some(&"test_value".to_string())
+            );
         }
         _ => panic!("Wrong message type"),
     }
@@ -122,11 +128,11 @@ async fn test_handler_basic_output() {
         height: Some(24),
         is_tty: true,
         color_support: ColorSupport::Basic16,
+        theme: None,
     };
+    let ctx = CommandContext::new(terminal_info);
 
-    let result = handler
-        .handle("test", terminal_info, &mut output, cancel)
-        .await;
+    let result = handler.handle("test", ctx, &mut output, cancel).await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 0); // Success exit code
     assert_eq!(String::from_utf8(output).unwrap(), "Hello, World!");
@@ -143,7 +149,7 @@ async fn test_handler_with_cancellation() {
         async fn handle(
             &self,
             _command: &str,
-            _terminal_info: TerminalInfo,
+            _ctx: CommandContext,
             mut output: impl AsyncWrite + Send + Unpin,
             cancel: CancellationToken,
         ) -> Result<i32> {
@@ -167,14 +173,47 @@ async fn test_handler_with_cancellation() {
         height: None,
         is_tty: false,
         color_support: ColorSupport::None,
+        theme: None,
     };
+    let ctx = CommandContext::new(terminal_info);
 
     // Cancel immediately
     cancel.cancel();
 
-    let result = handler
-        .handle("test", terminal_info, &mut output, cancel)
-        .await;
+    let result = handler.handle("test", ctx, &mut output, cancel).await;
     assert!(result.is_err());
     assert!(String::from_utf8(output).unwrap().contains("Cancelled"));
+}
+
+#[test]
+fn test_env_var_filter_none() {
+    let filter = EnvVarFilter::none();
+    assert!(filter.filter_current_env().is_empty());
+}
+
+#[test]
+fn test_env_var_filter_with_names() {
+    let mock_env = [("TEST_VAR", "test_value"), ("OTHER_VAR", "other")];
+    let filter = EnvVarFilter::with_names(["TEST_VAR"]);
+    let filtered = filter.filter_from(mock_env);
+    assert_eq!(filtered.get("TEST_VAR"), Some(&"test_value".to_string()));
+    assert_eq!(filtered.len(), 1);
+}
+
+#[test]
+fn test_env_var_filter_include() {
+    let mock_env = [("VAR1", "value1"), ("VAR2", "value2"), ("VAR3", "value3")];
+    let filter = EnvVarFilter::none().include("VAR1").include("VAR2");
+    let filtered = filter.filter_from(mock_env);
+    assert_eq!(filtered.len(), 2);
+    assert_eq!(filtered.get("VAR1"), Some(&"value1".to_string()));
+    assert_eq!(filtered.get("VAR2"), Some(&"value2".to_string()));
+}
+
+#[test]
+fn test_env_var_filter_missing_var() {
+    // Filter for a var that doesn't exist
+    let filter = EnvVarFilter::with_names(["NONEXISTENT_VAR_12345"]);
+    let filtered = filter.filter_current_env();
+    assert!(filtered.is_empty());
 }

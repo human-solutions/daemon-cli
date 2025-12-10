@@ -12,6 +12,9 @@ pub struct TerminalInfo {
     pub is_tty: bool,
     /// Level of color support (always returns at least ColorSupport::None)
     pub color_support: ColorSupport,
+    /// Terminal color theme (None if detection fails/times out)
+    #[serde(default)]
+    pub theme: Option<Theme>,
 }
 
 /// Level of color support in the terminal
@@ -27,6 +30,15 @@ pub enum ColorSupport {
     Truecolor,
 }
 
+/// Terminal color theme (dark or light mode)
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Theme {
+    /// Dark background with light text
+    Dark,
+    /// Light background with dark text
+    Light,
+}
+
 impl TerminalInfo {
     /// Detect terminal information from the current environment
     ///
@@ -34,6 +46,7 @@ impl TerminalInfo {
     /// - Terminal size (width/height) - fast, non-blocking
     /// - TTY detection - fast, non-blocking
     /// - Color support - fast, non-blocking
+    /// - Theme detection - up to 50ms timeout
     ///
     /// Individual detections can fail, but the function always returns
     /// a TerminalInfo struct with whatever information could be gathered.
@@ -46,12 +59,14 @@ impl TerminalInfo {
             .unwrap_or((None, None));
 
         let color_support = detect_color_support();
+        let theme = detect_theme();
 
         TerminalInfo {
             width,
             height,
             is_tty,
             color_support,
+            theme,
         }
     }
 }
@@ -71,6 +86,34 @@ fn detect_color_support() -> ColorSupport {
             }
         }
         None => ColorSupport::None,
+    }
+}
+
+/// Check if we're running in a test environment where terminal queries may hang.
+/// See: https://github.com/bash/terminal-colorsaurus/issues/38
+fn is_test_environment() -> bool {
+    // NEXTEST is set by cargo-nextest
+    // RUST_TEST_THREADS is set by cargo test
+    std::env::var("NEXTEST").is_ok() || std::env::var("RUST_TEST_THREADS").is_ok()
+}
+
+/// Detect terminal theme (dark/light mode)
+fn detect_theme() -> Option<Theme> {
+    use std::time::Duration;
+    use terminal_colorsaurus::{QueryOptions, color_scheme};
+
+    // Skip terminal detection in test environments to avoid hangs
+    if is_test_environment() {
+        return None;
+    }
+
+    let mut options = QueryOptions::default();
+    options.timeout = Duration::from_millis(50);
+
+    match color_scheme(options) {
+        Ok(terminal_colorsaurus::ColorScheme::Dark) => Some(Theme::Dark),
+        Ok(terminal_colorsaurus::ColorScheme::Light) => Some(Theme::Light),
+        Err(_) => None,
     }
 }
 

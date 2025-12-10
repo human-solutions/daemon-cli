@@ -35,7 +35,7 @@
 //!     async fn handle(
 //!         &self,
 //!         command: &str,
-//!         terminal_info: TerminalInfo,
+//!         ctx: CommandContext,
 //!         mut output: impl AsyncWrite + Send + Unpin,
 //!         cancel_token: CancellationToken,
 //!     ) -> Result<i32> {
@@ -62,7 +62,7 @@
 //! #     async fn handle(
 //! #         &self,
 //! #         command: &str,
-//! #         _terminal_info: TerminalInfo,
+//! #         _ctx: CommandContext,
 //! #         mut output: impl AsyncWrite + Send + Unpin,
 //! #         _cancel_token: CancellationToken,
 //! #     ) -> Result<i32> {
@@ -100,7 +100,8 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use std::{env, fs, str::FromStr, time::UNIX_EPOCH};
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, env, fs, str::FromStr, time::UNIX_EPOCH};
 use tokio::io::AsyncWrite;
 use tokio_util::sync::CancellationToken;
 
@@ -114,7 +115,113 @@ mod transport;
 pub use client::DaemonClient;
 pub use error_context::ErrorContextBuffer;
 pub use server::{DaemonHandle, DaemonServer};
-pub use terminal::{ColorSupport, TerminalInfo};
+pub use terminal::{ColorSupport, TerminalInfo, Theme};
+
+/// Configuration for filtering which environment variables to pass from client to daemon.
+///
+/// By default, no environment variables are passed. Use [`EnvVarFilter::with_names`] to
+/// specify exact variable names to include.
+///
+/// # Example
+///
+/// ```rust
+/// use daemon_cli::EnvVarFilter;
+///
+/// // Pass specific env vars
+/// let filter = EnvVarFilter::with_names(["MY_APP_DEBUG", "MY_APP_CONFIG"]);
+///
+/// // Or build incrementally
+/// let filter = EnvVarFilter::none()
+///     .include("MY_APP_DEBUG")
+///     .include("MY_APP_CONFIG");
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct EnvVarFilter {
+    names: Vec<String>,
+}
+
+impl EnvVarFilter {
+    /// Create a filter that passes no environment variables (default).
+    pub fn none() -> Self {
+        Self { names: vec![] }
+    }
+
+    /// Create a filter that passes env vars with the specified exact names.
+    pub fn with_names(names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            names: names.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// Include an env var name to pass.
+    pub fn include(mut self, name: impl Into<String>) -> Self {
+        self.names.push(name.into());
+        self
+    }
+
+    /// Filter environment variables from the provided source.
+    ///
+    /// This is useful for testing or when you want to filter from
+    /// a custom set of variables rather than the current process env.
+    pub fn filter_from<K, V>(
+        &self,
+        env: impl IntoIterator<Item = (K, V)>,
+    ) -> HashMap<String, String>
+    where
+        K: AsRef<str>,
+        V: Into<String>,
+    {
+        if self.names.is_empty() {
+            return HashMap::new();
+        }
+        env.into_iter()
+            .filter(|(k, _)| self.names.iter().any(|n| n == k.as_ref()))
+            .map(|(k, v)| (k.as_ref().to_string(), v.into()))
+            .collect()
+    }
+
+    /// Filter environment variables from the current process.
+    ///
+    /// Returns a HashMap containing only the env vars whose names match
+    /// those configured in this filter.
+    pub fn filter_current_env(&self) -> HashMap<String, String> {
+        self.filter_from(std::env::vars())
+    }
+}
+
+/// Context information passed with each command execution.
+///
+/// This struct bundles metadata about the command execution environment,
+/// including terminal information and environment variables. It is designed
+/// for extensibility - new fields can be added in the future without breaking
+/// the handler trait signature.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CommandContext {
+    /// Information about the client's terminal environment
+    pub terminal_info: TerminalInfo,
+    /// Environment variables passed from client (filtered by exact name match).
+    /// Empty by default for backward compatibility.
+    #[serde(default)]
+    pub env_vars: HashMap<String, String>,
+}
+
+impl CommandContext {
+    /// Create a new CommandContext with terminal info only (no env vars).
+    pub fn new(terminal_info: TerminalInfo) -> Self {
+        Self {
+            terminal_info,
+            env_vars: HashMap::new(),
+        }
+    }
+
+    /// Create a CommandContext with terminal info and environment variables.
+    pub fn with_env(terminal_info: TerminalInfo, env_vars: HashMap<String, String>) -> Self {
+        Self {
+            terminal_info,
+            env_vars,
+        }
+    }
+}
 
 /// Reason why daemon was started.
 ///
@@ -174,8 +281,8 @@ mod tests;
 /// Use `use daemon_cli::prelude::*;` to import all commonly needed items.
 pub mod prelude {
     pub use crate::{
-        ColorSupport, CommandHandler, DaemonClient, DaemonHandle, DaemonServer, ErrorContextBuffer,
-        StartupReason, TerminalInfo,
+        ColorSupport, CommandContext, CommandHandler, DaemonClient, DaemonHandle, DaemonServer,
+        EnvVarFilter, ErrorContextBuffer, StartupReason, TerminalInfo, Theme,
     };
     pub use anyhow::Result;
     pub use async_trait::async_trait;
@@ -271,7 +378,7 @@ fn auto_detect_daemon_name() -> String {
 ///     async fn handle(
 ///         &self,
 ///         command: &str,
-///         terminal_info: TerminalInfo,
+///         ctx: CommandContext,
 ///         mut output: impl AsyncWrite + Send + Unpin,
 ///         cancel_token: CancellationToken,
 ///     ) -> Result<i32> {
@@ -310,10 +417,10 @@ pub trait CommandHandler: Send + Sync {
     /// This method may be called concurrently from multiple tasks. Ensure
     /// your implementation is thread-safe if accessing shared state.
     ///
-    /// The `terminal_info` parameter contains information about the client's
-    /// terminal environment (width, height, color support, theme). Individual
-    /// fields may be `None` if detection failed. Use this to format output
-    /// appropriately for the client's terminal.
+    /// The `ctx` parameter contains information about the command execution
+    /// environment including terminal info (width, height, color support) and
+    /// any environment variables passed from the client. Use this to format
+    /// output appropriately and access client-side configuration.
     ///
     /// Write output incrementally via `output`. Long-running operations should
     /// check `cancel_token.is_cancelled()` to handle graceful cancellation.
@@ -323,7 +430,7 @@ pub trait CommandHandler: Send + Sync {
     async fn handle(
         &self,
         command: &str,
-        terminal_info: TerminalInfo,
+        ctx: CommandContext,
         output: impl AsyncWrite + Send + Unpin,
         cancel_token: CancellationToken,
     ) -> Result<i32>;
