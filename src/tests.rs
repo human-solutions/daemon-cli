@@ -217,3 +217,203 @@ fn test_env_var_filter_missing_var() {
     let filtered = filter.filter_current_env();
     assert!(filtered.is_empty());
 }
+
+// ============================================================================
+// Custom Payload Tests
+// ============================================================================
+
+/// Test payload type for unit tests
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default, Debug, PartialEq)]
+struct TestPayload {
+    value: String,
+    count: u32,
+}
+
+#[async_trait]
+impl PayloadCollector for TestPayload {
+    async fn collect() -> Self {
+        Self {
+            value: "collected".to_string(),
+            count: 42,
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_payload_collector_custom_type() {
+    let payload = TestPayload::collect().await;
+    assert_eq!(payload.value, "collected");
+    assert_eq!(payload.count, 42);
+}
+
+#[tokio::test]
+async fn test_payload_collector_unit_type() {
+    // Verify the default () implementation works
+    let payload = <()>::collect().await;
+    assert_eq!(payload, ());
+}
+
+#[test]
+fn test_command_context_with_payload_serialization() {
+    let terminal_info = TerminalInfo {
+        width: Some(120),
+        height: Some(40),
+        is_tty: true,
+        color_support: ColorSupport::Truecolor,
+        theme: Some(Theme::Dark),
+    };
+    let payload = TestPayload {
+        value: "test-value".to_string(),
+        count: 99,
+    };
+    let ctx = CommandContext::with_payload(terminal_info.clone(), payload);
+
+    // Serialize to JSON
+    let json = serde_json::to_string(&ctx).unwrap();
+
+    // Deserialize back
+    let deserialized: CommandContext<TestPayload> = serde_json::from_str(&json).unwrap();
+
+    // Verify all fields
+    assert_eq!(deserialized.terminal_info.width, Some(120));
+    assert_eq!(deserialized.terminal_info.height, Some(40));
+    assert!(deserialized.terminal_info.is_tty);
+    assert_eq!(deserialized.payload.value, "test-value");
+    assert_eq!(deserialized.payload.count, 99);
+}
+
+#[test]
+fn test_command_context_with_env_and_payload_serialization() {
+    let terminal_info = TerminalInfo {
+        width: None,
+        height: None,
+        is_tty: false,
+        color_support: ColorSupport::None,
+        theme: None,
+    };
+    let mut env_vars = HashMap::new();
+    env_vars.insert("MY_VAR".to_string(), "my_value".to_string());
+    let payload = TestPayload {
+        value: "with-env".to_string(),
+        count: 7,
+    };
+
+    let ctx = CommandContext::with_env_and_payload(terminal_info, env_vars, payload);
+
+    // Serialize and deserialize
+    let json = serde_json::to_string(&ctx).unwrap();
+    let deserialized: CommandContext<TestPayload> = serde_json::from_str(&json).unwrap();
+
+    // Verify payload survived
+    assert_eq!(deserialized.payload.value, "with-env");
+    assert_eq!(deserialized.payload.count, 7);
+    // Verify env vars survived
+    assert_eq!(
+        deserialized.env_vars.get("MY_VAR"),
+        Some(&"my_value".to_string())
+    );
+}
+
+#[test]
+fn test_socket_message_with_custom_payload() {
+    let terminal_info = TerminalInfo {
+        width: Some(80),
+        height: Some(24),
+        is_tty: false,
+        color_support: ColorSupport::Basic16,
+        theme: None,
+    };
+    let payload = TestPayload {
+        value: "socket-test".to_string(),
+        count: 123,
+    };
+    let context = CommandContext::with_payload(terminal_info, payload);
+
+    let msg: SocketMessage<TestPayload> = SocketMessage::Command {
+        command: "my-command".to_string(),
+        context,
+    };
+
+    // Serialize and deserialize
+    let json = serde_json::to_string(&msg).unwrap();
+    let deserialized: SocketMessage<TestPayload> = serde_json::from_str(&json).unwrap();
+
+    match deserialized {
+        SocketMessage::Command { command, context } => {
+            assert_eq!(command, "my-command");
+            assert_eq!(context.payload.value, "socket-test");
+            assert_eq!(context.payload.count, 123);
+        }
+        _ => panic!("Expected Command message"),
+    }
+}
+
+#[test]
+fn test_handler_with_custom_payload_compiles() {
+    // Test that a handler with custom payload type compiles correctly
+    #[derive(Clone)]
+    struct PayloadTestHandler;
+
+    #[async_trait]
+    impl CommandHandler<TestPayload> for PayloadTestHandler {
+        async fn handle(
+            &self,
+            _command: &str,
+            ctx: CommandContext<TestPayload>,
+            mut output: impl AsyncWrite + Send + Unpin,
+            _cancel: CancellationToken,
+        ) -> Result<i32> {
+            // Access the payload
+            let msg = format!("Payload: {} ({})\n", ctx.payload.value, ctx.payload.count);
+            output.write_all(msg.as_bytes()).await?;
+            Ok(0)
+        }
+    }
+
+    // Just verify it compiles
+    let _handler = PayloadTestHandler;
+}
+
+#[tokio::test]
+async fn test_handler_receives_payload() {
+    #[derive(Clone)]
+    struct PayloadEchoHandler;
+
+    #[async_trait]
+    impl CommandHandler<TestPayload> for PayloadEchoHandler {
+        async fn handle(
+            &self,
+            _command: &str,
+            ctx: CommandContext<TestPayload>,
+            mut output: impl AsyncWrite + Send + Unpin,
+            _cancel: CancellationToken,
+        ) -> Result<i32> {
+            // Echo payload values to output
+            output
+                .write_all(format!("{}:{}", ctx.payload.value, ctx.payload.count).as_bytes())
+                .await?;
+            Ok(0)
+        }
+    }
+
+    let handler = PayloadEchoHandler;
+    let mut output = Vec::new();
+    let cancel = CancellationToken::new();
+    let terminal_info = TerminalInfo {
+        width: None,
+        height: None,
+        is_tty: false,
+        color_support: ColorSupport::None,
+        theme: None,
+    };
+    let payload = TestPayload {
+        value: "hello".to_string(),
+        count: 42,
+    };
+    let ctx = CommandContext::with_payload(terminal_info, payload);
+
+    let result = handler.handle("test", ctx, &mut output, cancel).await;
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), 0);
+    assert_eq!(String::from_utf8(output).unwrap(), "hello:42");
+}
