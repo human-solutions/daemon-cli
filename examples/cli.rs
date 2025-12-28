@@ -56,7 +56,7 @@ async fn run_stop_mode() -> Result<()> {
     let root_path = env::current_dir()?.to_string_lossy().to_string();
 
     // Connect to daemon to get access to force_stop method
-    let client = DaemonClient::connect(&root_path).await?;
+    let client = DaemonClient::<()>::connect(&root_path).await?;
 
     println!("Stopping daemon...");
     client.force_stop().await?;
@@ -134,7 +134,7 @@ async fn run_client_mode() -> Result<()> {
     }
 
     // Connect to daemon (auto-spawns if needed, auto-detects everything)
-    let mut client = DaemonClient::connect(&root_path).await?;
+    let mut client = DaemonClient::<()>::connect(&root_path).await?;
 
     // Execute command and stream output to stdout
     let exit_code = client.execute_command(command).await?;

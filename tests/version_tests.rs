@@ -55,11 +55,11 @@ async fn test_version_handshake_success() -> Result<()> {
 
     // Send version check
     client
-        .send_message(&SocketMessage::VersionCheck { build_timestamp })
+        .send_message(&SocketMessage::<()>::VersionCheck { build_timestamp })
         .await?;
 
     // Receive response
-    let response = client.receive_message::<SocketMessage>().await?;
+    let response = client.receive_message::<SocketMessage<()>>().await?;
 
     match response {
         Some(SocketMessage::VersionCheck {
@@ -101,13 +101,13 @@ async fn test_version_mismatch_detection() -> Result<()> {
 
     // Send version check with mismatched timestamp
     client
-        .send_message(&SocketMessage::VersionCheck {
+        .send_message(&SocketMessage::<()>::VersionCheck {
             build_timestamp: client_build_timestamp,
         })
         .await?;
 
     // Receive response
-    let response = client.receive_message::<SocketMessage>().await?;
+    let response = client.receive_message::<SocketMessage<()>>().await?;
 
     match response {
         Some(SocketMessage::VersionCheck {
@@ -154,10 +154,10 @@ async fn test_multiple_version_handshakes() -> Result<()> {
 
         // Perform handshake
         client
-            .send_message(&SocketMessage::VersionCheck { build_timestamp })
+            .send_message(&SocketMessage::<()>::VersionCheck { build_timestamp })
             .await?;
 
-        let response = client.receive_message::<SocketMessage>().await?;
+        let response = client.receive_message::<SocketMessage<()>>().await?;
 
         match response {
             Some(SocketMessage::VersionCheck {
@@ -203,10 +203,10 @@ async fn test_version_handshake_before_command() -> Result<()> {
 
     // First, perform version handshake
     client
-        .send_message(&SocketMessage::VersionCheck { build_timestamp })
+        .send_message(&SocketMessage::<()>::VersionCheck { build_timestamp })
         .await?;
 
-    let handshake_response = client.receive_message::<SocketMessage>().await?;
+    let handshake_response = client.receive_message::<SocketMessage<()>>().await?;
     assert!(matches!(
         handshake_response,
         Some(SocketMessage::VersionCheck { .. })
@@ -221,14 +221,14 @@ async fn test_version_handshake_before_command() -> Result<()> {
         theme: None,
     };
     client
-        .send_message(&SocketMessage::Command {
+        .send_message(&SocketMessage::<()>::Command {
             command: "test command".to_string(),
             context: CommandContext::new(terminal_info),
         })
         .await?;
 
     // Should receive output chunks
-    let output_response = client.receive_message::<SocketMessage>().await?;
+    let output_response = client.receive_message::<SocketMessage<()>>().await?;
     assert!(matches!(
         output_response,
         Some(SocketMessage::OutputChunk(_))
@@ -271,14 +271,14 @@ async fn test_command_without_handshake_fails() -> Result<()> {
         theme: None,
     };
     client
-        .send_message(&SocketMessage::Command {
+        .send_message(&SocketMessage::<()>::Command {
             command: "test".to_string(),
             context: CommandContext::new(terminal_info),
         })
         .await?;
 
     // Connection should close or we get no response
-    let response = client.receive_message::<SocketMessage>().await?;
+    let response = client.receive_message::<SocketMessage<()>>().await?;
 
     // Should either get None (connection closed) or the server ignores it
     // Based on our implementation, server expects VersionCheck first
@@ -321,10 +321,10 @@ async fn test_concurrent_version_handshakes() -> Result<()> {
             let mut client = SocketClient::connect(&daemon_name_clone, &root_path_clone).await?;
 
             client
-                .send_message(&SocketMessage::VersionCheck { build_timestamp })
+                .send_message(&SocketMessage::<()>::VersionCheck { build_timestamp })
                 .await?;
 
-            let response = client.receive_message::<SocketMessage>().await?;
+            let response = client.receive_message::<SocketMessage<()>>().await?;
 
             match response {
                 Some(SocketMessage::VersionCheck {
@@ -382,13 +382,13 @@ async fn test_version_mismatch_triggers_client_action() -> Result<()> {
 
     // Send version check with newer timestamp
     client
-        .send_message(&SocketMessage::VersionCheck {
+        .send_message(&SocketMessage::<()>::VersionCheck {
             build_timestamp: client_timestamp,
         })
         .await?;
 
     // Server should respond with its own (older) timestamp
-    let response = client.receive_message::<SocketMessage>().await?;
+    let response = client.receive_message::<SocketMessage<()>>().await?;
 
     match response {
         Some(SocketMessage::VersionCheck {
@@ -434,10 +434,10 @@ async fn test_multiple_commands_same_connection() -> Result<()> {
 
     // First, perform version handshake
     client
-        .send_message(&SocketMessage::VersionCheck { build_timestamp })
+        .send_message(&SocketMessage::<()>::VersionCheck { build_timestamp })
         .await?;
 
-    let handshake_response = client.receive_message::<SocketMessage>().await?;
+    let handshake_response = client.receive_message::<SocketMessage<()>>().await?;
     assert!(matches!(
         handshake_response,
         Some(SocketMessage::VersionCheck { .. })
@@ -452,21 +452,21 @@ async fn test_multiple_commands_same_connection() -> Result<()> {
         theme: None,
     };
     client
-        .send_message(&SocketMessage::Command {
+        .send_message(&SocketMessage::<()>::Command {
             command: "first command".to_string(),
             context: CommandContext::new(terminal_info.clone()),
         })
         .await?;
 
     // Receive first command output
-    let output1 = client.receive_message::<SocketMessage>().await?;
+    let output1 = client.receive_message::<SocketMessage<()>>().await?;
     assert!(
         matches!(output1, Some(SocketMessage::OutputChunk(_))),
         "Should receive output for first command"
     );
 
     // Receive CommandComplete
-    let complete1 = client.receive_message::<SocketMessage>().await?;
+    let complete1 = client.receive_message::<SocketMessage<()>>().await?;
     assert!(
         matches!(
             complete1,
@@ -478,14 +478,14 @@ async fn test_multiple_commands_same_connection() -> Result<()> {
     // Attempt to send a second command on the same connection
     // The server uses one-shot semantics: it closes after handling one command
     client
-        .send_message(&SocketMessage::Command {
+        .send_message(&SocketMessage::<()>::Command {
             command: "second command".to_string(),
             context: CommandContext::new(terminal_info.clone()),
         })
         .await?;
 
     // The connection should be closed by the server, so we expect EOF (None)
-    let response = client.receive_message::<SocketMessage>().await?;
+    let response = client.receive_message::<SocketMessage<()>>().await?;
     assert!(
         response.is_none(),
         "Connection should be closed after first command (one-shot semantics), got: {:?}",

@@ -229,13 +229,14 @@ impl SocketConnection {
 
 // Internal: Message types for socket communication
 #[derive(Serialize, Deserialize, Debug)]
-pub enum SocketMessage {
+#[serde(bound(deserialize = "P: Default + serde::de::DeserializeOwned"))]
+pub enum SocketMessage<P = ()> {
     VersionCheck {
         build_timestamp: u64,
     },
     Command {
         command: String,
-        context: CommandContext,
+        context: CommandContext<P>,
     },
     OutputChunk(Vec<u8>),
     CommandComplete {

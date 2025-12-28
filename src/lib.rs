@@ -100,8 +100,8 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, env, fs, str::FromStr, time::UNIX_EPOCH};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::{collections::HashMap, env, fs, marker::PhantomData, str::FromStr, time::UNIX_EPOCH};
 use tokio::io::AsyncWrite;
 use tokio_util::sync::CancellationToken;
 
@@ -189,28 +189,82 @@ impl EnvVarFilter {
     }
 }
 
+/// Trait for auto-collecting payload data before each command.
+///
+/// Implement this trait on your payload struct to define how data is
+/// collected on the client side before being sent to the daemon.
+///
+/// # Example
+///
+/// ```rust
+/// use daemon_cli::prelude::*;
+///
+/// #[derive(Serialize, Deserialize, Clone, Default)]
+/// struct MyPayload {
+///     cwd: String,
+///     user: Option<String>,
+/// }
+///
+/// #[async_trait]
+/// impl PayloadCollector for MyPayload {
+///     async fn collect() -> Self {
+///         Self {
+///             cwd: std::env::current_dir()
+///                 .map(|p| p.display().to_string())
+///                 .unwrap_or_default(),
+///             user: std::env::var("USER").ok(),
+///         }
+///     }
+/// }
+/// ```
+#[async_trait]
+pub trait PayloadCollector:
+    Serialize + DeserializeOwned + Send + Sync + Clone + Default + 'static
+{
+    /// Collect payload data. Called automatically by client before each command.
+    async fn collect() -> Self;
+}
+
+/// Default implementation for () - no-op for backward compatibility.
+#[async_trait]
+impl PayloadCollector for () {
+    async fn collect() -> Self {}
+}
+
 /// Context information passed with each command execution.
 ///
 /// This struct bundles metadata about the command execution environment,
-/// including terminal information and environment variables. It is designed
-/// for extensibility - new fields can be added in the future without breaking
-/// the handler trait signature.
+/// including terminal information, environment variables, and a user-defined
+/// payload. It is designed for extensibility - the generic payload allows
+/// passing custom data from client to daemon.
+///
+/// The default type parameter `P = ()` maintains backward compatibility with
+/// existing code that doesn't use payloads.
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct CommandContext {
+#[serde(bound(deserialize = "P: Default + serde::de::DeserializeOwned"))]
+pub struct CommandContext<P = ()> {
     /// Information about the client's terminal environment
     pub terminal_info: TerminalInfo,
     /// Environment variables passed from client (filtered by exact name match).
     /// Empty by default for backward compatibility.
     #[serde(default)]
     pub env_vars: HashMap<String, String>,
+    /// User-defined payload data collected via [`PayloadCollector::collect`].
+    #[serde(default)]
+    pub payload: P,
+    /// PhantomData to handle variance correctly
+    #[serde(skip)]
+    _phantom: PhantomData<P>,
 }
 
-impl CommandContext {
-    /// Create a new CommandContext with terminal info only (no env vars).
+impl CommandContext<()> {
+    /// Create a new CommandContext with terminal info only (no env vars, no payload).
     pub fn new(terminal_info: TerminalInfo) -> Self {
         Self {
             terminal_info,
             env_vars: HashMap::new(),
+            payload: (),
+            _phantom: PhantomData,
         }
     }
 
@@ -219,6 +273,34 @@ impl CommandContext {
         Self {
             terminal_info,
             env_vars,
+            payload: (),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<P> CommandContext<P> {
+    /// Create a CommandContext with terminal info and custom payload.
+    pub fn with_payload(terminal_info: TerminalInfo, payload: P) -> Self {
+        Self {
+            terminal_info,
+            env_vars: HashMap::new(),
+            payload,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Create a CommandContext with terminal info, environment variables, and custom payload.
+    pub fn with_env_and_payload(
+        terminal_info: TerminalInfo,
+        env_vars: HashMap<String, String>,
+        payload: P,
+    ) -> Self {
+        Self {
+            terminal_info,
+            env_vars,
+            payload,
+            _phantom: PhantomData,
         }
     }
 }
@@ -282,10 +364,11 @@ mod tests;
 pub mod prelude {
     pub use crate::{
         ColorSupport, CommandContext, CommandHandler, DaemonClient, DaemonHandle, DaemonServer,
-        EnvVarFilter, ErrorContextBuffer, StartupReason, TerminalInfo, Theme,
+        EnvVarFilter, ErrorContextBuffer, PayloadCollector, StartupReason, TerminalInfo, Theme,
     };
     pub use anyhow::Result;
     pub use async_trait::async_trait;
+    pub use serde::{Deserialize, Serialize};
     pub use tokio_util::sync::CancellationToken;
 }
 
@@ -411,16 +494,20 @@ fn auto_detect_daemon_name() -> String {
 /// }
 /// ```
 #[async_trait]
-pub trait CommandHandler: Send + Sync {
+pub trait CommandHandler<P = ()>: Send + Sync
+where
+    P: PayloadCollector,
+{
     /// Process a command with streaming output and cancellation support.
     ///
     /// This method may be called concurrently from multiple tasks. Ensure
     /// your implementation is thread-safe if accessing shared state.
     ///
     /// The `ctx` parameter contains information about the command execution
-    /// environment including terminal info (width, height, color support) and
-    /// any environment variables passed from the client. Use this to format
-    /// output appropriately and access client-side configuration.
+    /// environment including terminal info (width, height, color support),
+    /// any environment variables passed from the client, and the user-defined
+    /// payload. Use this to format output appropriately and access client-side
+    /// configuration.
     ///
     /// Write output incrementally via `output`. Long-running operations should
     /// check `cancel_token.is_cancelled()` to handle graceful cancellation.
@@ -430,7 +517,7 @@ pub trait CommandHandler: Send + Sync {
     async fn handle(
         &self,
         command: &str,
-        ctx: CommandContext,
+        ctx: CommandContext<P>,
         output: impl AsyncWrite + Send + Unpin,
         cancel_token: CancellationToken,
     ) -> Result<i32>;

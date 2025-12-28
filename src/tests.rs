@@ -40,11 +40,11 @@ fn test_command_handler_trait_compiles() {
 #[test]
 fn test_socket_message_serialization() {
     // Test VersionCheck message
-    let version_msg = SocketMessage::VersionCheck {
+    let version_msg: SocketMessage<()> = SocketMessage::VersionCheck {
         build_timestamp: 1234567890,
     };
     let serialized = serde_json::to_string(&version_msg).unwrap();
-    let deserialized: SocketMessage = serde_json::from_str(&serialized).unwrap();
+    let deserialized: SocketMessage<()> = serde_json::from_str(&serialized).unwrap();
     match deserialized {
         SocketMessage::VersionCheck { build_timestamp } => {
             assert_eq!(build_timestamp, 1234567890);
@@ -63,12 +63,12 @@ fn test_socket_message_serialization() {
     let mut env_vars = HashMap::new();
     env_vars.insert("TEST_VAR".to_string(), "test_value".to_string());
     let context = CommandContext::with_env(terminal_info.clone(), env_vars);
-    let command_msg = SocketMessage::Command {
+    let command_msg: SocketMessage<()> = SocketMessage::Command {
         command: "test command".to_string(),
         context,
     };
     let serialized = serde_json::to_string(&command_msg).unwrap();
-    let deserialized: SocketMessage = serde_json::from_str(&serialized).unwrap();
+    let deserialized: SocketMessage<()> = serde_json::from_str(&serialized).unwrap();
     match deserialized {
         SocketMessage::Command { command, context } => {
             assert_eq!(command, "test command");
@@ -85,9 +85,9 @@ fn test_socket_message_serialization() {
     }
 
     // Test OutputChunk message
-    let chunk_msg = SocketMessage::OutputChunk(vec![1, 2, 3, 4, 5]);
+    let chunk_msg: SocketMessage<()> = SocketMessage::OutputChunk(vec![1, 2, 3, 4, 5]);
     let serialized = serde_json::to_string(&chunk_msg).unwrap();
-    let deserialized: SocketMessage = serde_json::from_str(&serialized).unwrap();
+    let deserialized: SocketMessage<()> = serde_json::from_str(&serialized).unwrap();
     match deserialized {
         SocketMessage::OutputChunk(data) => {
             assert_eq!(data, vec![1, 2, 3, 4, 5]);
@@ -96,9 +96,9 @@ fn test_socket_message_serialization() {
     }
 
     // Test CommandComplete message
-    let complete_msg = SocketMessage::CommandComplete { exit_code: 0 };
+    let complete_msg: SocketMessage<()> = SocketMessage::CommandComplete { exit_code: 0 };
     let serialized = serde_json::to_string(&complete_msg).unwrap();
-    let deserialized: SocketMessage = serde_json::from_str(&serialized).unwrap();
+    let deserialized: SocketMessage<()> = serde_json::from_str(&serialized).unwrap();
     match deserialized {
         SocketMessage::CommandComplete { exit_code } => {
             assert_eq!(exit_code, 0);
@@ -107,9 +107,9 @@ fn test_socket_message_serialization() {
     }
 
     // Test CommandError message
-    let error_msg = SocketMessage::CommandError("test error".to_string());
+    let error_msg: SocketMessage<()> = SocketMessage::CommandError("test error".to_string());
     let serialized = serde_json::to_string(&error_msg).unwrap();
-    let deserialized: SocketMessage = serde_json::from_str(&serialized).unwrap();
+    let deserialized: SocketMessage<()> = serde_json::from_str(&serialized).unwrap();
     match deserialized {
         SocketMessage::CommandError(err) => {
             assert_eq!(err, "test error");

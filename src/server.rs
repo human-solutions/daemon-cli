@@ -4,6 +4,7 @@ use anyhow::Result;
 use std::{
     fs,
     io::ErrorKind,
+    marker::PhantomData,
     process,
     sync::{
         Arc,
@@ -62,7 +63,7 @@ static CLIENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// let (server, _handle) = DaemonServer::new("/path/to/project", daemon, StartupReason::FirstStart);
 /// // Use handle.shutdown() to stop the server, or drop it to run indefinitely
 /// ```
-pub struct DaemonServer<H> {
+pub struct DaemonServer<H, P = ()> {
     /// Daemon name (e.g., CLI tool name)
     pub daemon_name: String,
     /// Project root path (used as unique identifier/scope)
@@ -74,6 +75,7 @@ pub struct DaemonServer<H> {
     handler: H,
     shutdown_rx: oneshot::Receiver<()>,
     connection_semaphore: Arc<Semaphore>,
+    _phantom: PhantomData<P>,
 }
 
 /// Handle for controlling a running daemon server.
@@ -94,9 +96,10 @@ impl DaemonHandle {
     }
 }
 
-impl<H> DaemonServer<H>
+impl<H, P> DaemonServer<H, P>
 where
-    H: CommandHandler + Clone + 'static,
+    H: CommandHandler<P> + Clone + 'static,
+    P: PayloadCollector,
 {
     /// Create a new daemon server instance with default connection limit (100).
     ///
@@ -169,6 +172,7 @@ where
             handler,
             shutdown_rx,
             connection_semaphore,
+            _phantom: PhantomData,
         };
         let handle = DaemonHandle { shutdown_tx };
         (server, handle)
@@ -271,13 +275,13 @@ where
                             tracing::debug!("Connection accepted");
 
                         // Version handshake
-                        if let Ok(Some(SocketMessage::VersionCheck {
+                        if let Ok(Some(SocketMessage::<P>::VersionCheck {
                             build_timestamp: client_timestamp,
-                        })) = connection.receive_message().await
+                        })) = connection.receive_message::<SocketMessage<P>>().await
                         {
                             // Send our build timestamp
                             if connection
-                                .send_message(&SocketMessage::VersionCheck { build_timestamp })
+                                .send_message(&SocketMessage::<P>::VersionCheck { build_timestamp })
                                 .await
                                 .is_err()
                             {
@@ -303,7 +307,7 @@ where
                         }
 
                         // Receive command
-                        let (command, context) = match connection.receive_message::<SocketMessage>().await {
+                        let (command, context) = match connection.receive_message::<SocketMessage<P>>().await {
                             Ok(Some(SocketMessage::Command { command, context })) => (command, context),
                             _ => {
                                 tracing::warn!("No command received from client");
@@ -364,13 +368,13 @@ where
                                             // Send completion message (error or success with exit code)
                                             let result = if let Some(ref error) = handler_error {
                                                 tracing::error!(error = %error, "Handler failed");
-                                                let _ = connection.send_message(&SocketMessage::CommandError(error.clone())).await;
+                                                let _ = connection.send_message(&SocketMessage::<P>::CommandError(error.clone())).await;
                                                 let _ = connection.flush().await;
                                                 Err(anyhow::anyhow!("{}", error))
                                             } else {
                                                 let exit_code = handler_exit_code.unwrap_or(0);
                                                 tracing::debug!(exit_code = exit_code, "Handler completed");
-                                                let _ = connection.send_message(&SocketMessage::CommandComplete { exit_code }).await;
+                                                let _ = connection.send_message(&SocketMessage::<P>::CommandComplete { exit_code }).await;
                                                 let _ = connection.flush().await;
                                                 Ok(())
                                             };
@@ -379,7 +383,7 @@ where
                                             // This ensures the message is received before connection closes
                                             let _ = tokio::time::timeout(
                                                 Duration::from_secs(5),
-                                                connection.receive_message::<SocketMessage>()
+                                                connection.receive_message::<SocketMessage<P>>()
                                             ).await;
 
                                             break result;
@@ -387,7 +391,7 @@ where
                                         Ok(n) => {
                                             // Send chunk to client
                                             let chunk = buffer[..n].to_vec();
-                                            if connection.send_message(&SocketMessage::OutputChunk(chunk)).await.is_err() {
+                                            if connection.send_message(&SocketMessage::<P>::OutputChunk(chunk)).await.is_err() {
                                                 // Connection closed - cancel handler
                                                 tracing::warn!("Connection closed by client");
                                                 cancel_token.cancel();

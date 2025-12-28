@@ -174,7 +174,7 @@ async fn test_basic_streaming() -> Result<()> {
 
     // Connect client (note: this would normally auto-spawn, but we started manually)
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(
+    let mut client = DaemonClient::<()>::connect_with_name_and_timestamp(
         &daemon_name,
         &root_path,
         daemon_exe,
@@ -208,7 +208,7 @@ async fn test_chunked_output() -> Result<()> {
 
     // Connect and execute
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(
+    let mut client = DaemonClient::<()>::connect_with_name_and_timestamp(
         &daemon_name,
         &root_path,
         daemon_exe,
@@ -238,7 +238,7 @@ async fn test_handler_error_reporting() -> Result<()> {
 
     // Connect and execute
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(
+    let mut client = DaemonClient::<()>::connect_with_name_and_timestamp(
         &daemon_name,
         &root_path,
         daemon_exe,
@@ -272,7 +272,7 @@ async fn test_multiple_sequential_commands() -> Result<()> {
 
     // Execute multiple commands sequentially
     for i in 1..=3 {
-        let mut client = DaemonClient::connect_with_name_and_timestamp(
+        let mut client = DaemonClient::<()>::connect_with_name_and_timestamp(
             &daemon_name,
             &root_path,
             daemon_exe.clone(),
@@ -305,7 +305,7 @@ async fn test_connection_close_during_processing() -> Result<()> {
 
     // Connect and start long-running command
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(
+    let mut client = DaemonClient::<()>::connect_with_name_and_timestamp(
         &daemon_name,
         &root_path,
         daemon_exe,
@@ -407,7 +407,7 @@ async fn test_concurrent_clients() -> Result<()> {
         let daemon_name_clone = daemon_name.clone();
         let root_path_clone = root_path.clone();
         let handle = spawn(async move {
-            let mut client = DaemonClient::connect_with_name_and_timestamp(
+            let mut client = DaemonClient::<()>::connect_with_name_and_timestamp(
                 &daemon_name_clone,
                 &root_path_clone,
                 daemon_exe_clone,
@@ -465,7 +465,7 @@ async fn test_concurrent_stress_10_plus_clients() -> Result<()> {
         let daemon_name_clone = daemon_name.clone();
         let root_path_clone = root_path.clone();
         let handle = spawn(async move {
-            let mut client = DaemonClient::connect_with_name_and_timestamp(
+            let mut client = DaemonClient::<()>::connect_with_name_and_timestamp(
                 &daemon_name_clone,
                 &root_path_clone,
                 daemon_exe_clone,
@@ -536,7 +536,7 @@ async fn test_connection_limit() -> Result<()> {
         let daemon_name_clone = daemon_name.clone();
         let root_path_clone = root_path.clone();
         let handle = spawn(async move {
-            let mut client = DaemonClient::connect_with_name_and_timestamp(
+            let mut client = DaemonClient::<()>::connect_with_name_and_timestamp(
                 &daemon_name_clone,
                 &root_path_clone,
                 daemon_exe_clone,
@@ -625,7 +625,7 @@ async fn test_force_stop_not_running() -> Result<()> {
     let (shutdown_handle, join_handle) =
         start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
 
-    let client = DaemonClient::connect_with_name_and_timestamp(
+    let client = DaemonClient::<()>::connect_with_name_and_timestamp(
         &daemon_name,
         &root_path,
         daemon_exe.clone(),
@@ -667,7 +667,7 @@ async fn test_restart_method() -> Result<()> {
 
     // Connect client
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(
+    let mut client = DaemonClient::<()>::connect_with_name_and_timestamp(
         &daemon_name,
         &root_path,
         daemon_exe.clone(),
@@ -706,7 +706,7 @@ async fn test_with_auto_restart_disabled_by_default() -> Result<()> {
 
     // Connect client (auto_restart should be false by default)
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let _client = DaemonClient::connect_with_name_and_timestamp(
+    let _client = DaemonClient::<()>::connect_with_name_and_timestamp(
         &daemon_name,
         &root_path,
         daemon_exe.clone(),
@@ -742,7 +742,7 @@ async fn test_with_auto_restart_enabled() -> Result<()> {
 
     // Connect client with auto_restart enabled
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(
+    let mut client = DaemonClient::<()>::connect_with_name_and_timestamp(
         &daemon_name,
         &root_path,
         daemon_exe.clone(),
@@ -812,7 +812,7 @@ async fn test_handler_completes_before_output_fully_read() -> Result<()> {
         start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
 
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(
+    let mut client = DaemonClient::<()>::connect_with_name_and_timestamp(
         &daemon_name,
         &root_path,
         daemon_exe,
@@ -871,7 +871,7 @@ async fn test_large_output_streaming() -> Result<()> {
         start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
 
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(
+    let mut client = DaemonClient::<()>::connect_with_name_and_timestamp(
         &daemon_name,
         &root_path,
         daemon_exe,
@@ -916,7 +916,7 @@ async fn test_handler_panic_reports_error() -> Result<()> {
         start_test_daemon(&daemon_name, &root_path, build_timestamp, handler).await;
 
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(
+    let mut client = DaemonClient::<()>::connect_with_name_and_timestamp(
         &daemon_name,
         &root_path,
         daemon_exe,
@@ -939,7 +939,7 @@ async fn test_handler_panic_reports_error() -> Result<()> {
     sleep(Duration::from_millis(100)).await;
 
     // Try a new connection to verify server is still operational
-    let client2 = DaemonClient::connect_with_name_and_timestamp(
+    let client2 = DaemonClient::<()>::connect_with_name_and_timestamp(
         &daemon_name,
         &root_path,
         PathBuf::from("./target/debug/examples/cli"),
@@ -984,7 +984,7 @@ async fn test_cleanup_stale_socket_and_pid() -> Result<()> {
 
     // Connect client - should succeed after cleanup
     let daemon_exe = PathBuf::from("./target/debug/examples/cli");
-    let mut client = DaemonClient::connect_with_name_and_timestamp(
+    let mut client = DaemonClient::<()>::connect_with_name_and_timestamp(
         &daemon_name,
         &root_path,
         daemon_exe,
@@ -1019,7 +1019,7 @@ async fn test_rapid_connect_disconnect_stress() -> Result<()> {
         let root_path_clone = root_path.clone();
         let daemon_exe_clone = daemon_exe.clone();
         let handle = spawn(async move {
-            let client = DaemonClient::connect_with_name_and_timestamp(
+            let client = DaemonClient::<()>::connect_with_name_and_timestamp(
                 &daemon_name_clone,
                 &root_path_clone,
                 daemon_exe_clone,
@@ -1057,7 +1057,7 @@ async fn test_rapid_connect_disconnect_stress() -> Result<()> {
     // Verify server is still stable
     sleep(Duration::from_millis(100)).await;
 
-    let mut final_client = DaemonClient::connect_with_name_and_timestamp(
+    let mut final_client = DaemonClient::<()>::connect_with_name_and_timestamp(
         &daemon_name,
         &root_path,
         daemon_exe,
@@ -1112,7 +1112,7 @@ async fn test_connection_limit_immediate_rejection() -> Result<()> {
         let root_path_clone = root_path.clone();
         let daemon_exe_clone = daemon_exe.clone();
         let handle = spawn(async move {
-            let mut client = DaemonClient::connect_with_name_and_timestamp(
+            let mut client = DaemonClient::<()>::connect_with_name_and_timestamp(
                 &daemon_name_clone,
                 &root_path_clone,
                 daemon_exe_clone,
@@ -1130,7 +1130,7 @@ async fn test_connection_limit_immediate_rejection() -> Result<()> {
     // Try to connect more clients - they should be rejected immediately
     let mut rejected_count = 0;
     for _ in 0..3 {
-        let client_result = DaemonClient::connect_with_name_and_timestamp(
+        let client_result = DaemonClient::<()>::connect_with_name_and_timestamp(
             &daemon_name,
             &root_path,
             daemon_exe.clone(),

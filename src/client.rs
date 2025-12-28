@@ -2,9 +2,9 @@ use crate::error_context::{ErrorContextBuffer, get_or_init_global_error_context}
 use crate::process::{TerminateResult, kill_process, process_exists, terminate_process};
 use crate::terminal::TerminalInfo;
 use crate::transport::{SocketClient, SocketMessage, daemon_socket_exists, socket_path};
-use crate::{CommandContext, EnvVarFilter, StartupReason};
+use crate::{CommandContext, EnvVarFilter, PayloadCollector, StartupReason};
 use anyhow::{Result, bail};
-use std::{fs, path::PathBuf, process::Stdio, time::Duration};
+use std::{fs, marker::PhantomData, path::PathBuf, process::Stdio, time::Duration};
 use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
 
 /// Client for communicating with daemon processes via Unix sockets.
@@ -25,7 +25,7 @@ use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
 ///
 /// // Actual usage pattern (requires daemon binary):
 ///  # tokio_test::block_on(async {
-///      let Ok(mut client) = DaemonClient::connect("/path/to/project").await else {
+///      let Ok(mut client) = DaemonClient::<()>::connect("/path/to/project").await else {
 ///         // handle error...
 ///         return;
 ///      };
@@ -34,7 +34,7 @@ use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
 ///      let exit_code = client.execute_command("process file.txt".to_string()).await.ok();
 ///  # });
 /// ```
-pub struct DaemonClient {
+pub struct DaemonClient<P = ()> {
     socket_client: SocketClient,
     /// Daemon name (e.g., CLI tool name)
     pub daemon_name: String,
@@ -50,9 +50,14 @@ pub struct DaemonClient {
     auto_restart_on_error: bool,
     /// Filter for which environment variables to pass to daemon
     env_var_filter: EnvVarFilter,
+    /// PhantomData for payload type
+    _phantom: PhantomData<P>,
 }
 
-impl DaemonClient {
+impl<P> DaemonClient<P>
+where
+    P: PayloadCollector,
+{
     /// Connect to daemon, spawning it if needed with automatic version sync.
     ///
     /// Automatically detects the daemon name from the binary filename, the daemon
@@ -137,11 +142,11 @@ impl DaemonClient {
 
         // Perform version handshake
         socket_client
-            .send_message(&SocketMessage::VersionCheck { build_timestamp })
+            .send_message(&SocketMessage::<P>::VersionCheck { build_timestamp })
             .await?;
 
         // Receive daemon's version
-        let daemon_timestamp = match socket_client.receive_message().await? {
+        let daemon_timestamp = match socket_client.receive_message::<SocketMessage<P>>().await? {
             Some(SocketMessage::VersionCheck {
                 build_timestamp: daemon_ts,
             }) => daemon_ts,
@@ -178,9 +183,9 @@ impl DaemonClient {
 
             // Retry handshake
             socket_client
-                .send_message(&SocketMessage::VersionCheck { build_timestamp })
+                .send_message(&SocketMessage::<P>::VersionCheck { build_timestamp })
                 .await?;
-            match socket_client.receive_message().await? {
+            match socket_client.receive_message::<SocketMessage<P>>().await? {
                 Some(SocketMessage::VersionCheck {
                     build_timestamp: daemon_ts,
                 }) if daemon_ts == build_timestamp => {
@@ -207,6 +212,7 @@ impl DaemonClient {
             error_context,
             auto_restart_on_error: false,
             env_var_filter: EnvVarFilter::none(),
+            _phantom: PhantomData,
         })
     }
 
@@ -350,7 +356,7 @@ impl DaemonClient {
     /// use daemon_cli::prelude::*;
     ///
     /// # tokio_test::block_on(async {
-    /// let client = DaemonClient::connect("/path/to/project").await?;
+    /// let client = DaemonClient::<()>::connect("/path/to/project").await?;
     /// client.force_stop().await?;
     /// # Ok::<(), anyhow::Error>(())
     /// # });
@@ -432,7 +438,7 @@ impl DaemonClient {
     /// use daemon_cli::prelude::*;
     ///
     /// # tokio_test::block_on(async {
-    /// let mut client = DaemonClient::connect("/path/to/project").await?;
+    /// let mut client = DaemonClient::<()>::connect("/path/to/project").await?;
     ///
     /// // If daemon crashes or hangs:
     /// client.restart().await?;
@@ -498,10 +504,10 @@ impl DaemonClient {
 
         // Perform version handshake
         socket_client
-            .send_message(&SocketMessage::VersionCheck { build_timestamp })
+            .send_message(&SocketMessage::<P>::VersionCheck { build_timestamp })
             .await?;
 
-        match socket_client.receive_message().await? {
+        match socket_client.receive_message::<SocketMessage<P>>().await? {
             Some(SocketMessage::VersionCheck {
                 build_timestamp: daemon_ts,
             }) if daemon_ts == build_timestamp => {
@@ -522,6 +528,7 @@ impl DaemonClient {
             error_context,
             auto_restart_on_error: false,
             env_var_filter: EnvVarFilter::none(),
+            _phantom: PhantomData,
         })
     }
 
@@ -539,7 +546,7 @@ impl DaemonClient {
     /// use daemon_cli::prelude::*;
     ///
     /// # tokio_test::block_on(async {
-    /// let mut client = DaemonClient::connect("/path/to/project")
+    /// let mut client = DaemonClient::<()>::connect("/path/to/project")
     ///     .await?
     ///     .with_auto_restart(true);
     ///
@@ -564,7 +571,7 @@ impl DaemonClient {
     /// use daemon_cli::prelude::*;
     ///
     /// # tokio_test::block_on(async {
-    /// let mut client = DaemonClient::connect("/path/to/project")
+    /// let mut client = DaemonClient::<()>::connect("/path/to/project")
     ///     .await?
     ///     .with_env_filter(EnvVarFilter::with_names(["MY_APP_DEBUG", "MY_APP_CONFIG"]));
     ///
@@ -639,6 +646,9 @@ impl DaemonClient {
     async fn execute_command_internal(&mut self, command: String) -> Result<i32> {
         tracing::debug!(command = %command, "Executing command");
 
+        // Auto-collect payload before each command
+        let payload = P::collect().await;
+
         // Detect terminal information from the client environment
         let terminal_info = TerminalInfo::detect().await;
         tracing::debug!(
@@ -658,12 +668,12 @@ impl DaemonClient {
             );
         }
 
-        // Build command context
-        let context = CommandContext::with_env(terminal_info, env_vars);
+        // Build command context with payload
+        let context = CommandContext::with_env_and_payload(terminal_info, env_vars, payload);
 
         // Send command with context
         self.socket_client
-            .send_message(&SocketMessage::Command { command, context })
+            .send_message(&SocketMessage::<P>::Command { command, context })
             .await
             .inspect_err(|_| {
                 self.error_context.dump_to_stderr();
@@ -673,7 +683,11 @@ impl DaemonClient {
         let mut stdout = tokio::io::stdout();
 
         loop {
-            match self.socket_client.receive_message::<SocketMessage>().await {
+            match self
+                .socket_client
+                .receive_message::<SocketMessage<P>>()
+                .await
+            {
                 Ok(Some(SocketMessage::OutputChunk(chunk))) => {
                     // Write chunk to stdout
                     stdout.write_all(&chunk).await?;
