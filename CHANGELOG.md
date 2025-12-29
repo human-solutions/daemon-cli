@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2025-12-29
+
+### Changed (BREAKING)
+
+- Removed `EnvVarFilter` - use `PayloadCollector` trait instead for passing env vars
+- `CommandContext<P>` is now generic with custom payload support via `PayloadCollector`
+- Removed `DaemonClient::with_env_filter()` method
+
+### Migration
+
+```rust
+// Before (0.8.0):
+let client = DaemonClient::<()>::connect(path)
+    .await?
+    .with_env_filter(EnvVarFilter::with_names(["MY_VAR"]));
+
+// After (0.9.0):
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct MyPayload { my_var: Option<String> }
+
+#[async_trait]
+impl PayloadCollector for MyPayload {
+    async fn collect() -> Self {
+        Self { my_var: std::env::var("MY_VAR").ok() }
+    }
+}
+
+let client = DaemonClient::<MyPayload>::connect(path).await?;
+```
+
 ## [0.8.0] - 2025-12-09
 
 ### Changed (BREAKING)
