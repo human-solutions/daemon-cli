@@ -2,7 +2,7 @@ use crate::error_context::{ErrorContextBuffer, get_or_init_global_error_context}
 use crate::process::{TerminateResult, kill_process, process_exists, terminate_process};
 use crate::terminal::TerminalInfo;
 use crate::transport::{SocketClient, SocketMessage, daemon_socket_exists, socket_path};
-use crate::{CommandContext, EnvVarFilter, PayloadCollector, StartupReason};
+use crate::{CommandContext, PayloadCollector, StartupReason};
 use anyhow::{Result, bail};
 use std::{fs, marker::PhantomData, path::PathBuf, process::Stdio, time::Duration};
 use tokio::{io::AsyncWriteExt, process::Command, time::sleep};
@@ -48,8 +48,6 @@ pub struct DaemonClient<P = ()> {
     error_context: ErrorContextBuffer,
     /// Enable automatic daemon restart on fatal connection errors (default: false)
     auto_restart_on_error: bool,
-    /// Filter for which environment variables to pass to daemon
-    env_var_filter: EnvVarFilter,
     /// PhantomData for payload type
     _phantom: PhantomData<P>,
 }
@@ -211,7 +209,6 @@ where
             build_timestamp,
             error_context,
             auto_restart_on_error: false,
-            env_var_filter: EnvVarFilter::none(),
             _phantom: PhantomData,
         })
     }
@@ -463,10 +460,8 @@ where
 
         // Replace self with new client, preserving settings
         let auto_restart = self.auto_restart_on_error;
-        let env_filter = std::mem::take(&mut self.env_var_filter);
         *self = new_client;
         self.auto_restart_on_error = auto_restart;
-        self.env_var_filter = env_filter;
 
         Ok(())
     }
@@ -527,7 +522,6 @@ where
             build_timestamp,
             error_context,
             auto_restart_on_error: false,
-            env_var_filter: EnvVarFilter::none(),
             _phantom: PhantomData,
         })
     }
@@ -557,31 +551,6 @@ where
     /// ```
     pub fn with_auto_restart(mut self, enabled: bool) -> Self {
         self.auto_restart_on_error = enabled;
-        self
-    }
-
-    /// Configure which environment variables to pass to the daemon.
-    ///
-    /// By default, no environment variables are passed (backward compatible).
-    /// Use [`EnvVarFilter::with_names`] to specify exact variable names to include.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use daemon_cli::prelude::*;
-    ///
-    /// # tokio_test::block_on(async {
-    /// let mut client = DaemonClient::<()>::connect("/path/to/project")
-    ///     .await?
-    ///     .with_env_filter(EnvVarFilter::with_names(["MY_APP_DEBUG", "MY_APP_CONFIG"]));
-    ///
-    /// // Commands will now include these env vars if they are set
-    /// client.execute_command("process file.txt".to_string()).await?;
-    /// # Ok::<(), anyhow::Error>(())
-    /// # });
-    /// ```
-    pub fn with_env_filter(mut self, filter: EnvVarFilter) -> Self {
-        self.env_var_filter = filter;
         self
     }
 
@@ -659,17 +628,8 @@ where
             "Detected terminal info"
         );
 
-        // Filter environment variables based on configured names
-        let env_vars = self.env_var_filter.filter_current_env();
-        if !env_vars.is_empty() {
-            tracing::debug!(
-                env_var_count = env_vars.len(),
-                "Passing filtered environment variables"
-            );
-        }
-
         // Build command context with payload
-        let context = CommandContext::with_env_and_payload(terminal_info, env_vars, payload);
+        let context = CommandContext::with_payload(terminal_info, payload);
 
         // Send command with context
         self.socket_client

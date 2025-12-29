@@ -320,7 +320,6 @@ where
                             terminal_height = ?context.terminal_info.height,
                             is_tty = context.terminal_info.is_tty,
                             color_support = ?context.terminal_info.color_support,
-                            env_var_count = context.env_vars.len(),
                             "Received command with context"
                         );
 

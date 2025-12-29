@@ -1,6 +1,5 @@
 use crate::transport::SocketMessage;
 use crate::*;
-use std::collections::HashMap;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 // Test handler for unit tests
@@ -60,9 +59,7 @@ fn test_socket_message_serialization() {
         color_support: ColorSupport::Truecolor,
         theme: None,
     };
-    let mut env_vars = HashMap::new();
-    env_vars.insert("TEST_VAR".to_string(), "test_value".to_string());
-    let context = CommandContext::with_env(terminal_info.clone(), env_vars);
+    let context = CommandContext::new(terminal_info.clone());
     let command_msg: SocketMessage<()> = SocketMessage::Command {
         command: "test command".to_string(),
         context,
@@ -76,10 +73,6 @@ fn test_socket_message_serialization() {
             assert_eq!(context.terminal_info.height, Some(24));
             assert!(context.terminal_info.is_tty);
             assert_eq!(context.terminal_info.color_support, ColorSupport::Truecolor);
-            assert_eq!(
-                context.env_vars.get("TEST_VAR"),
-                Some(&"test_value".to_string())
-            );
         }
         _ => panic!("Wrong message type"),
     }
@@ -185,39 +178,6 @@ async fn test_handler_with_cancellation() {
     assert!(String::from_utf8(output).unwrap().contains("Cancelled"));
 }
 
-#[test]
-fn test_env_var_filter_none() {
-    let filter = EnvVarFilter::none();
-    assert!(filter.filter_current_env().is_empty());
-}
-
-#[test]
-fn test_env_var_filter_with_names() {
-    let mock_env = [("TEST_VAR", "test_value"), ("OTHER_VAR", "other")];
-    let filter = EnvVarFilter::with_names(["TEST_VAR"]);
-    let filtered = filter.filter_from(mock_env);
-    assert_eq!(filtered.get("TEST_VAR"), Some(&"test_value".to_string()));
-    assert_eq!(filtered.len(), 1);
-}
-
-#[test]
-fn test_env_var_filter_include() {
-    let mock_env = [("VAR1", "value1"), ("VAR2", "value2"), ("VAR3", "value3")];
-    let filter = EnvVarFilter::none().include("VAR1").include("VAR2");
-    let filtered = filter.filter_from(mock_env);
-    assert_eq!(filtered.len(), 2);
-    assert_eq!(filtered.get("VAR1"), Some(&"value1".to_string()));
-    assert_eq!(filtered.get("VAR2"), Some(&"value2".to_string()));
-}
-
-#[test]
-fn test_env_var_filter_missing_var() {
-    // Filter for a var that doesn't exist
-    let filter = EnvVarFilter::with_names(["NONEXISTENT_VAR_12345"]);
-    let filtered = filter.filter_current_env();
-    assert!(filtered.is_empty());
-}
-
 // ============================================================================
 // Custom Payload Tests
 // ============================================================================
@@ -280,38 +240,6 @@ fn test_command_context_with_payload_serialization() {
     assert!(deserialized.terminal_info.is_tty);
     assert_eq!(deserialized.payload.value, "test-value");
     assert_eq!(deserialized.payload.count, 99);
-}
-
-#[test]
-fn test_command_context_with_env_and_payload_serialization() {
-    let terminal_info = TerminalInfo {
-        width: None,
-        height: None,
-        is_tty: false,
-        color_support: ColorSupport::None,
-        theme: None,
-    };
-    let mut env_vars = HashMap::new();
-    env_vars.insert("MY_VAR".to_string(), "my_value".to_string());
-    let payload = TestPayload {
-        value: "with-env".to_string(),
-        count: 7,
-    };
-
-    let ctx = CommandContext::with_env_and_payload(terminal_info, env_vars, payload);
-
-    // Serialize and deserialize
-    let json = serde_json::to_string(&ctx).unwrap();
-    let deserialized: CommandContext<TestPayload> = serde_json::from_str(&json).unwrap();
-
-    // Verify payload survived
-    assert_eq!(deserialized.payload.value, "with-env");
-    assert_eq!(deserialized.payload.count, 7);
-    // Verify env vars survived
-    assert_eq!(
-        deserialized.env_vars.get("MY_VAR"),
-        Some(&"my_value".to_string())
-    );
 }
 
 #[test]
