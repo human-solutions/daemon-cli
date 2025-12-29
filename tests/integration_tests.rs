@@ -1138,13 +1138,13 @@ async fn test_connection_limit_immediate_rejection() -> Result<()> {
         )
         .await;
 
-        if client_result.is_err() {
-            rejected_count += 1;
-        } else {
-            // If connection succeeded, try to execute - should fail
-            let mut client = client_result.unwrap();
-            if client.execute_command("test".to_string()).await.is_err() {
-                rejected_count += 1;
+        match client_result {
+            Err(_) => rejected_count += 1,
+            Ok(mut client) => {
+                // If connection succeeded, try to execute - should fail
+                if client.execute_command("test".to_string()).await.is_err() {
+                    rejected_count += 1;
+                }
             }
         }
     }
