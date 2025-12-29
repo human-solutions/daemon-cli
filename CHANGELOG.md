@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ```rust
 // Before (0.8.0):
-let client = DaemonClient::<()>::connect(path)
+let client = DaemonClient::connect(path)
     .await?
     .with_env_filter(EnvVarFilter::with_names(["MY_VAR"]));
 
