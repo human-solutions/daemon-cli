@@ -8,13 +8,14 @@ A streaming daemon-client framework for Rust with automatic lifecycle management
 - Streaming stdin/stdout interface
 - Ctrl+C cancellation support
 - Custom exit codes (0-255) for command results
-- Low latency (< 50ms warm, < 500ms cold)
+- Generic payload support for passing custom data from client to daemon
+- Cross-platform (Linux, macOS, Windows)
 
 ## Installation
 
 ```toml
 [dependencies]
-daemon-cli = "0.3.0"
+daemon-cli = "0.9.0"
 ```
 
 ## Usage
@@ -23,7 +24,9 @@ daemon-cli = "0.3.0"
 
 ```rust
 use daemon_cli::prelude::*;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
+#[derive(Clone)]
 struct MyHandler;
 
 #[async_trait]
@@ -31,9 +34,11 @@ impl CommandHandler for MyHandler {
     async fn handle(
         &self,
         command: &str,
+        ctx: CommandContext,
         mut output: impl AsyncWrite + Unpin + Send,
         cancel: CancellationToken,
     ) -> Result<i32> {
+        // Access terminal info via ctx.terminal_info
         output.write_all(format!("Received: {}\n", command).as_bytes()).await?;
         Ok(0)  // Return exit code (0 = success)
     }
@@ -44,81 +49,80 @@ impl CommandHandler for MyHandler {
 
 ```rust
 let root_path = "/path/to/project";
-// Automatically detects daemon name and binary mtime
-let (server, _handle) = DaemonServer::new(root_path, MyHandler);
+let (server, _handle) = DaemonServer::new(root_path, MyHandler, StartupReason::default());
 server.run().await?;
-// Optionally use handle.shutdown() to stop the server gracefully
 ```
 
 **Run client:**
 
 ```rust
 let root_path = "/path/to/project";
-// Automatically detects daemon name, executable path, and binary mtime
 let mut client = DaemonClient::connect(root_path).await?;
 let exit_code = client.execute_command(command).await?;
-std::process::exit(exit_code);  // Exit with the command's exit code
+std::process::exit(exit_code);
 ```
 
-**Use it:**
+## Custom Payload
 
-```bash
-echo "hello" | my-cli
-cat file.txt | my-cli process
+Pass custom data from client to daemon using `PayloadCollector`:
+
+```rust
+use daemon_cli::prelude::*;
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct MyPayload {
+    cwd: String,
+    user: Option<String>,
+}
+
+#[async_trait]
+impl PayloadCollector for MyPayload {
+    async fn collect() -> Self {
+        Self {
+            cwd: std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            user: std::env::var("USER").ok(),
+        }
+    }
+}
+
+// Handler receives payload in ctx.payload
+#[async_trait]
+impl CommandHandler<MyPayload> for MyHandler {
+    async fn handle(
+        &self,
+        command: &str,
+        ctx: CommandContext<MyPayload>,
+        mut output: impl AsyncWrite + Unpin + Send,
+        cancel: CancellationToken,
+    ) -> Result<i32> {
+        println!("CWD: {}", ctx.payload.cwd);
+        Ok(0)
+    }
+}
+
+// Client with payload
+let client = DaemonClient::<MyPayload>::connect(root_path).await?;
 ```
 
 ## Exit Codes
 
-Handlers return custom exit codes (0-255) to indicate command results:
-
-```rust
-async fn handle(...) -> Result<i32> {
-    match command.trim() {
-        "status" => {
-            output.write_all(b"Ready\n").await?;
-            Ok(0)  // Success
-        }
-        "unknown" => {
-            output.write_all(b"Unknown command\n").await?;
-            Ok(127)  // Command not found (shell convention)
-        }
-        _ => {
-            // For unrecoverable errors, return Err
-            // This becomes exit code 1 with error message to stderr
-            Err(anyhow::anyhow!("Fatal error"))
-        }
-    }
-}
-```
+Handlers return custom exit codes (0-255):
 
 - `Ok(0)` - Success
 - `Ok(1-255)` - Application-specific error codes
-- `Err(e)` - Unrecoverable error (becomes exit code 1 with error message)
-
-## Logging
-
-The library uses `tracing` for structured logging. Daemon implementations should initialize a tracing subscriber:
-
-```rust
-tracing_subscriber::fmt()
-    .with_target(false)
-    .compact()
-    .init();
-```
-
-This provides automatic client context (`client{id=X}`) for all logs. Handlers can add custom spans for command-level or operation-level context. Client-side logs are suppressed but shown on errors.
-
-See `examples/cli.rs` and `examples/concurrent.rs` for complete logging setup examples.
+- `Err(e)` - Unrecoverable error (becomes exit code 1)
 
 ## Example
 
 See `examples/cli.rs` for a complete working example:
 
 ```bash
-cargo run --example cli -- daemon --daemon-name cli --daemon-path /tmp/test
+cargo run --example cli -- daemon
 echo "status" | cargo run --example cli
 ```
 
 ## Platform
 
-Unix-like systems only (Linux, macOS). Uses Unix domain sockets.
+Cross-platform: Linux, macOS, Windows. Uses Unix domain sockets on Unix and named pipes on Windows.

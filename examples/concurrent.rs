@@ -323,7 +323,7 @@ async fn run_client_mode() -> Result<()> {
     }
 
     // Connect to daemon (auto-spawns if needed, auto-detects everything)
-    let mut client = DaemonClient::connect(&root_path).await?;
+    let mut client = DaemonClient::<()>::connect(&root_path).await?;
 
     // Execute command and stream output to stdout
     let exit_code = client.execute_command(command).await?;

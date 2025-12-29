@@ -100,8 +100,8 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, env, fs, str::FromStr, time::UNIX_EPOCH};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::{env, fs, marker::PhantomData, str::FromStr, time::UNIX_EPOCH};
 use tokio::io::AsyncWrite;
 use tokio_util::sync::CancellationToken;
 
@@ -117,108 +117,88 @@ pub use error_context::ErrorContextBuffer;
 pub use server::{DaemonHandle, DaemonServer};
 pub use terminal::{ColorSupport, TerminalInfo, Theme};
 
-/// Configuration for filtering which environment variables to pass from client to daemon.
+/// Trait for auto-collecting payload data before each command.
 ///
-/// By default, no environment variables are passed. Use [`EnvVarFilter::with_names`] to
-/// specify exact variable names to include.
+/// Implement this trait on your payload struct to define how data is
+/// collected on the client side before being sent to the daemon.
 ///
 /// # Example
 ///
 /// ```rust
-/// use daemon_cli::EnvVarFilter;
+/// use daemon_cli::prelude::*;
 ///
-/// // Pass specific env vars
-/// let filter = EnvVarFilter::with_names(["MY_APP_DEBUG", "MY_APP_CONFIG"]);
+/// #[derive(Serialize, Deserialize, Clone, Default)]
+/// struct MyPayload {
+///     cwd: String,
+///     user: Option<String>,
+/// }
 ///
-/// // Or build incrementally
-/// let filter = EnvVarFilter::none()
-///     .include("MY_APP_DEBUG")
-///     .include("MY_APP_CONFIG");
+/// #[async_trait]
+/// impl PayloadCollector for MyPayload {
+///     async fn collect() -> Self {
+///         Self {
+///             cwd: std::env::current_dir()
+///                 .map(|p| p.display().to_string())
+///                 .unwrap_or_default(),
+///             user: std::env::var("USER").ok(),
+///         }
+///     }
+/// }
 /// ```
-#[derive(Debug, Clone, Default)]
-pub struct EnvVarFilter {
-    names: Vec<String>,
+#[async_trait]
+pub trait PayloadCollector:
+    Serialize + DeserializeOwned + Send + Sync + Clone + Default + 'static
+{
+    /// Collect payload data. Called automatically by client before each command.
+    async fn collect() -> Self;
 }
 
-impl EnvVarFilter {
-    /// Create a filter that passes no environment variables (default).
-    pub fn none() -> Self {
-        Self { names: vec![] }
-    }
-
-    /// Create a filter that passes env vars with the specified exact names.
-    pub fn with_names(names: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self {
-            names: names.into_iter().map(Into::into).collect(),
-        }
-    }
-
-    /// Include an env var name to pass.
-    pub fn include(mut self, name: impl Into<String>) -> Self {
-        self.names.push(name.into());
-        self
-    }
-
-    /// Filter environment variables from the provided source.
-    ///
-    /// This is useful for testing or when you want to filter from
-    /// a custom set of variables rather than the current process env.
-    pub fn filter_from<K, V>(
-        &self,
-        env: impl IntoIterator<Item = (K, V)>,
-    ) -> HashMap<String, String>
-    where
-        K: AsRef<str>,
-        V: Into<String>,
-    {
-        if self.names.is_empty() {
-            return HashMap::new();
-        }
-        env.into_iter()
-            .filter(|(k, _)| self.names.iter().any(|n| n == k.as_ref()))
-            .map(|(k, v)| (k.as_ref().to_string(), v.into()))
-            .collect()
-    }
-
-    /// Filter environment variables from the current process.
-    ///
-    /// Returns a HashMap containing only the env vars whose names match
-    /// those configured in this filter.
-    pub fn filter_current_env(&self) -> HashMap<String, String> {
-        self.filter_from(std::env::vars())
-    }
+/// Default implementation for () - no-op for backward compatibility.
+#[async_trait]
+impl PayloadCollector for () {
+    async fn collect() -> Self {}
 }
 
 /// Context information passed with each command execution.
 ///
 /// This struct bundles metadata about the command execution environment,
-/// including terminal information and environment variables. It is designed
-/// for extensibility - new fields can be added in the future without breaking
-/// the handler trait signature.
+/// including terminal information and a user-defined payload. The generic
+/// payload allows passing custom data (including environment variables)
+/// from client to daemon via [`PayloadCollector`].
+///
+/// The default type parameter `P = ()` maintains backward compatibility with
+/// existing code that doesn't use payloads.
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct CommandContext {
+#[serde(bound(deserialize = "P: Default + serde::de::DeserializeOwned"))]
+pub struct CommandContext<P = ()> {
     /// Information about the client's terminal environment
     pub terminal_info: TerminalInfo,
-    /// Environment variables passed from client (filtered by exact name match).
-    /// Empty by default for backward compatibility.
+    /// User-defined payload data collected via [`PayloadCollector::collect`].
     #[serde(default)]
-    pub env_vars: HashMap<String, String>,
+    pub payload: P,
+    /// PhantomData to handle variance correctly
+    #[serde(skip)]
+    _phantom: PhantomData<P>,
 }
 
-impl CommandContext {
-    /// Create a new CommandContext with terminal info only (no env vars).
+impl CommandContext<()> {
+    /// Create a new CommandContext with terminal info only (no payload).
     pub fn new(terminal_info: TerminalInfo) -> Self {
         Self {
             terminal_info,
-            env_vars: HashMap::new(),
+            payload: (),
+            _phantom: PhantomData,
         }
     }
+}
 
-    /// Create a CommandContext with terminal info and environment variables.
-    pub fn with_env(terminal_info: TerminalInfo, env_vars: HashMap<String, String>) -> Self {
+impl<P> CommandContext<P> {
+    /// Create a CommandContext with terminal info and custom payload.
+    pub fn with_payload(terminal_info: TerminalInfo, payload: P) -> Self {
         Self {
             terminal_info,
-            env_vars,
+            payload,
+            _phantom: PhantomData,
         }
     }
 }
@@ -282,10 +262,11 @@ mod tests;
 pub mod prelude {
     pub use crate::{
         ColorSupport, CommandContext, CommandHandler, DaemonClient, DaemonHandle, DaemonServer,
-        EnvVarFilter, ErrorContextBuffer, StartupReason, TerminalInfo, Theme,
+        ErrorContextBuffer, PayloadCollector, StartupReason, TerminalInfo, Theme,
     };
     pub use anyhow::Result;
     pub use async_trait::async_trait;
+    pub use serde::{Deserialize, Serialize};
     pub use tokio_util::sync::CancellationToken;
 }
 
@@ -411,16 +392,19 @@ fn auto_detect_daemon_name() -> String {
 /// }
 /// ```
 #[async_trait]
-pub trait CommandHandler: Send + Sync {
+pub trait CommandHandler<P = ()>: Send + Sync
+where
+    P: PayloadCollector,
+{
     /// Process a command with streaming output and cancellation support.
     ///
     /// This method may be called concurrently from multiple tasks. Ensure
     /// your implementation is thread-safe if accessing shared state.
     ///
     /// The `ctx` parameter contains information about the command execution
-    /// environment including terminal info (width, height, color support) and
-    /// any environment variables passed from the client. Use this to format
-    /// output appropriately and access client-side configuration.
+    /// environment including terminal info (width, height, color support)
+    /// and the user-defined payload. Use this to format output appropriately
+    /// and access client-side data.
     ///
     /// Write output incrementally via `output`. Long-running operations should
     /// check `cancel_token.is_cancelled()` to handle graceful cancellation.
@@ -430,7 +414,7 @@ pub trait CommandHandler: Send + Sync {
     async fn handle(
         &self,
         command: &str,
-        ctx: CommandContext,
+        ctx: CommandContext<P>,
         output: impl AsyncWrite + Send + Unpin,
         cancel_token: CancellationToken,
     ) -> Result<i32>;
