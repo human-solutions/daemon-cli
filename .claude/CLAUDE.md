@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`daemon-cli` is a Rust library for building streaming daemon-client applications with automatic lifecycle management. It enables CLI tools to communicate with long-running background processes via stdin/stdout streaming over Unix domain sockets.
+`daemon-cli` is a Rust library for building streaming daemon-client applications with automatic lifecycle management. It enables CLI tools to communicate with long-running background processes via stdin/stdout streaming (Unix domain sockets on Unix, named pipes on Windows).
 
 ## Essential Commands
 
@@ -91,15 +91,21 @@ Note: Multiple clients can execute commands concurrently. Each connection gets i
 The `CommandHandler` trait is the primary extension point:
 ```rust
 #[async_trait]
-pub trait CommandHandler: Send + Sync {
+pub trait CommandHandler<P = ()>: Send + Sync
+where
+    P: PayloadCollector,
+{
     async fn handle(
         &self,
-        command: &str,           // Command string from stdin
-        output: impl AsyncWrite,  // Stream output here incrementally
+        command: &str,              // Command string from stdin
+        ctx: CommandContext<P>,     // Terminal info + custom payload
+        output: impl AsyncWrite,    // Stream output here incrementally
         cancel_token: CancellationToken,  // Check for cancellation
-    ) -> Result<()>;
+    ) -> Result<i32>;  // Return exit code (0 = success)
 }
 ```
+
+The generic `P` parameter allows passing custom data from client to daemon via `PayloadCollector::collect()`.
 
 **Concurrency Considerations:**
 - Handlers must implement `Clone + Send + Sync` for concurrent execution
@@ -126,7 +132,7 @@ use daemon_cli::prelude::*;
 
 let handler = MyHandler::new();
 // Automatically detects daemon name and binary mtime
-let (server, _handle) = DaemonServer::new("/path/to/project", handler);
+let (server, _handle) = DaemonServer::new("/path/to/project", handler, StartupReason::default());
 // Default: max 100 concurrent connections
 ```
 
@@ -139,6 +145,7 @@ let handler = MyHandler::new();
 let (server, _handle) = DaemonServer::new_with_limit(
     "/path/to/project",
     handler,
+    StartupReason::default(),
     10  // Max 10 concurrent clients
 );
 ```
@@ -147,8 +154,8 @@ When the limit is reached, new connections wait for an available slot. This is i
 
 ## Platform Requirements
 
-- Unix-like systems only (Linux, macOS)
-- Uses Unix domain sockets (not portable to Windows)
+- Cross-platform: Linux, macOS, Windows
+- Uses Unix domain sockets on Unix, named pipes on Windows
 - Edition: Rust 2024
 
 # Other memory
