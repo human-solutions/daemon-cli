@@ -228,8 +228,8 @@ where
             "Daemon started and listening"
         );
 
-        // Notify handler of startup reason
-        self.handler.on_startup(self.startup_reason);
+        // Notify handler of startup reason and PID
+        self.handler.on_startup(self.startup_reason, pid);
 
         loop {
             // Select between accepting connection and shutdown signal

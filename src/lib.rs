@@ -421,10 +421,10 @@ where
 
     /// Called once when the daemon starts, before accepting connections.
     ///
-    /// Override this method to log the startup reason or perform
+    /// Override this method to log the startup reason and PID, or perform
     /// initialization that depends on whether this is a fresh start
     /// or a restart.
     ///
     /// The default implementation does nothing.
-    fn on_startup(&self, _reason: StartupReason) {}
+    fn on_startup(&self, _reason: StartupReason, _pid: u32) {}
 }
